@@ -229,7 +229,7 @@ class MapModule(OverlayModule):
         # Текущая позиция
         pos_x, pos_y = geo_to_canvas(point.lat, point.lon)
 
-        # Вн외 круг
+        # Внешний круг
         r = 8
         draw.ellipse(
             [pos_x - r - 3, pos_y - r - 3, pos_x + r + 3, pos_y + r + 3],
