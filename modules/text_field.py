@@ -4,25 +4,10 @@
 Отображает одно значение (скорость, высота, координаты, курс).
 """
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 from modules.base import OverlayModule
+from modules.utils import load_font, get_text_size
 from core.parser import TelemetryPoint
-
-
-def _load_font(size: int) -> ImageFont.ImageFont:
-    """Загружает шрифт заданного размера."""
-    font_paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-        "/System/Library/Fonts/Helvetica.ttc",
-        "/Windows/Fonts/arial.ttf",
-    ]
-    for path in font_paths:
-        try:
-            return ImageFont.truetype(path, size)
-        except (IOError, OSError):
-            continue
-    return ImageFont.load_default()
 
 
 # Метки полей телеметрии по умолчанию
@@ -79,26 +64,15 @@ class TextFieldModule(OverlayModule):
 
     def render(self, point: TelemetryPoint, all_points: list) -> Image.Image:
         """Рендерит текстовое поле телеметрии."""
-        font = _load_font(self.font_size)
-        label_font = _load_font(max(12, self.font_size // 2))
+        font = load_font(self.font_size)
+        label_font = load_font(max(12, self.font_size // 2))
 
         value_str = self._get_value(point)
         display_text = f"{value_str} {self.unit}".strip()
 
-        # Определяем размер текста
-        try:
-            bbox = font.getbbox(display_text)
-            text_w = bbox[2] - bbox[0]
-            text_h = bbox[3] - bbox[1]
-        except AttributeError:
-            text_w, text_h = font.getsize(display_text)
-
-        try:
-            lbbox = label_font.getbbox(self.label)
-            label_w = lbbox[2] - lbbox[0]
-            label_h = lbbox[3] - lbbox[1]
-        except AttributeError:
-            label_w, label_h = label_font.getsize(self.label)
+        # Определяем размер текста через вспомогательную функцию
+        text_w, text_h = get_text_size(font, display_text)
+        label_w, label_h = get_text_size(label_font, self.label)
 
         # Размер холста
         pad = 8

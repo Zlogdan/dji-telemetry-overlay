@@ -4,20 +4,10 @@
 """
 
 import math
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 from modules.base import OverlayModule
+from modules.utils import load_font
 from core.parser import TelemetryPoint
-
-
-def _load_font(size: int) -> ImageFont.ImageFont:
-    """Загружает шрифт заданного размера, используя резервный при ошибке."""
-    try:
-        return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", size)
-    except (IOError, OSError):
-        try:
-            return ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", size)
-        except (IOError, OSError):
-            return ImageFont.load_default()
 
 
 class SpeedometerModule(OverlayModule):
@@ -107,7 +97,7 @@ class SpeedometerModule(OverlayModule):
             # Числа у делений
             if i % 2 == 0:
                 label_val = int(max_val * i / num_ticks)
-                font_small = _load_font(max(10, self.width // 20))
+                font_small = load_font(max(10, self.width // 20))
                 lx = cx + (tick_r_inner - 12) * math.cos(tick_angle)
                 ly = cy + (tick_r_inner - 12) * math.sin(tick_angle)
                 draw.text(
@@ -133,7 +123,7 @@ class SpeedometerModule(OverlayModule):
         )
 
         # Значение скорости
-        font_big = _load_font(max(20, self.width // 7))
+        font_big = load_font(max(20, self.width // 7))
         speed_text = f"{speed_value:.0f}"
         draw.text(
             (cx, cy - 15),
@@ -144,7 +134,7 @@ class SpeedometerModule(OverlayModule):
         )
 
         # Единица измерения
-        font_unit = _load_font(max(10, self.width // 15))
+        font_unit = load_font(max(10, self.width // 15))
         draw.text(
             (cx, cy + 20),
             self.unit_label,

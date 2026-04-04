@@ -16,6 +16,9 @@ from core.parser import TelemetryPoint
 from core.interpolator import interpolate_to_fps, smooth_points
 from modules import create_module
 
+# Псевдоним для удобства использования в методах класса
+TP = TelemetryPoint
+
 
 class RenderEngine:
     """Основной движок рендеринга оверлея."""
@@ -88,7 +91,6 @@ class RenderEngine:
         raw_points_data = telemetry.get("points", [])
 
         # Преобразуем словари в TelemetryPoint
-        from core.parser import TelemetryPoint as TP
         raw_points = []
         for p in raw_points_data:
             if isinstance(p, dict):
@@ -192,7 +194,6 @@ class RenderEngine:
             telemetry: данные телеметрии
             frame_index: индекс кадра для предпросмотра
         """
-        from core.parser import TelemetryPoint as TP
         points_data = telemetry.get("points", [])
 
         if not points_data:

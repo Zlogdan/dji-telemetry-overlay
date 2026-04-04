@@ -4,20 +4,10 @@
 """
 
 import math
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 from modules.base import OverlayModule
+from modules.utils import load_font
 from core.parser import TelemetryPoint
-
-
-def _load_font(size: int) -> ImageFont.ImageFont:
-    """Загружает шрифт заданного размера."""
-    try:
-        return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", size)
-    except (IOError, OSError):
-        try:
-            return ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", size)
-        except (IOError, OSError):
-            return ImageFont.load_default()
 
 
 # Стороны света на русском языке
@@ -83,7 +73,7 @@ class HeadingModule(OverlayModule):
             draw.line([x1, y1, x2, y2], fill=tick_color, width=tick_width)
 
         # Буквы сторон света (вращаются вместе с розой)
-        font_cardinal = _load_font(max(12, self.width // 12))
+        font_cardinal = load_font(max(12, self.width // 12))
         for deg, label in CARDINAL_POINTS.items():
             angle_rad = math.radians(deg - heading - 90)
             lx = cx + (r - 30) * math.cos(angle_rad)
@@ -123,7 +113,7 @@ class HeadingModule(OverlayModule):
         )
 
         # Значение курса
-        font_deg = _load_font(max(10, self.width // 14))
+        font_deg = load_font(max(10, self.width // 14))
         heading_text = f"{heading:.0f}°"
 
         # Фон для текста курса
