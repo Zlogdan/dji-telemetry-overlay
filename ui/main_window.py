@@ -238,12 +238,12 @@ class MainWindow(QMainWindow):
         for i, tm in enumerate(text_modules):
             field = tm.get("field", "")
             label = tm.get("label", f"Текст ({field})")
-            key = f"text_{field}"
             cb = QCheckBox(f"Текст ({label})")
             cb.setChecked(tm.get("enabled", True))
-            cb.stateChanged.connect(lambda state, k=key, idx=i: self._toggle_module(k, state, idx))
+            # Захватываем type_str и module_idx явно чтобы избежать проблем с замыканием
+            cb.stateChanged.connect(lambda state, type_str="text", module_idx=i: self._toggle_module(type_str, state, module_idx))
             layout.addWidget(cb)
-            self.module_checkboxes[key] = (cb, "text", i)
+            self.module_checkboxes[f"text_{field}_{i}"] = (cb, "text", i)
 
         # Остальные модули
         for type_key, type_label in module_labels.items():
@@ -251,7 +251,7 @@ class MainWindow(QMainWindow):
             for idx, mod in enumerate(matching):
                 cb = QCheckBox(type_label)
                 cb.setChecked(mod.get("enabled", True))
-                cb.stateChanged.connect(lambda state, k=type_key, i=idx: self._toggle_module(k, state, i))
+                cb.stateChanged.connect(lambda state, type_str=type_key, module_idx=idx: self._toggle_module(type_str, state, module_idx))
                 layout.addWidget(cb)
                 self.module_checkboxes[f"{type_key}_{idx}"] = (cb, type_key, idx)
 
@@ -534,11 +534,10 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Ошибка рендеринга")
         QMessageBox.critical(self, "Ошибка рендеринга", error_msg)
 
-    def _toggle_module(self, key: str, state: int, idx: int):
-        """Включает/отключает модуль в конфигурации."""
+    def _toggle_module(self, type_key: str, state: int, idx: int):
+        """Включает/отключает модуль в конфигурации по типу и индексу."""
         enabled = state == Qt.Checked
         modules = self.config_manager.config.get("modules", [])
-        type_key = key.split("_")[0]
         matching = [m for m in modules if m.get("type") == type_key]
         if idx < len(matching):
             matching[idx]["enabled"] = enabled
