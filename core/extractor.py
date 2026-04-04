@@ -1,0 +1,273 @@
+# -*- coding: utf-8 -*-
+"""
+Модуль извлечения телеметрии из видеофайлов DJI.
+Использует ffprobe и ffmpeg для получения данных GPS.
+"""
+
+import subprocess
+import json
+import os
+import math
+import random
+from typing import Optional
+from pathlib import Path
+
+
+def _run_ffprobe(video_path: str) -> Optional[dict]:
+    """Запускает ffprobe для получения информации о потоках видео."""
+    try:
+        cmd = [
+            "ffprobe",
+            "-v", "quiet",
+            "-print_format", "json",
+            "-show_streams",
+            "-show_format",
+            str(video_path)
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            return None
+        return json.loads(result.stdout)
+    except FileNotFoundError:
+        print("Ошибка: ffprobe не найден. Убедитесь, что FFmpeg установлен и доступен в PATH.")
+        return None
+    except subprocess.TimeoutExpired:
+        print("Ошибка: ffprobe завис при анализе видео.")
+        return None
+    except json.JSONDecodeError:
+        print("Ошибка: не удалось разобрать вывод ffprobe.")
+        return None
+
+
+def _extract_data_stream(video_path: str) -> bytes:
+    """Извлекает поток данных (телеметрию) из видеофайла."""
+    try:
+        cmd = [
+            "ffmpeg",
+            "-i", str(video_path),
+            "-map", "0:d:0",
+            "-c", "copy",
+            "-f", "data",
+            "pipe:1"
+        ]
+        result = subprocess.run(cmd, capture_output=True, timeout=60)
+        if result.returncode == 0:
+            return result.stdout
+        return b""
+    except FileNotFoundError:
+        print("Ошибка: ffmpeg не найден.")
+        return b""
+    except subprocess.TimeoutExpired:
+        print("Ошибка: ffmpeg завис при извлечении данных.")
+        return b""
+
+
+def _parse_nmea_from_bytes(data: bytes) -> list:
+    """Разбирает NMEA-предложения из байтовых данных."""
+    from core.parser import parse_nmea_sentence
+    points = []
+    try:
+        text = data.decode("ascii", errors="ignore")
+    except Exception:
+        return points
+
+    lines = text.replace("\r", "\n").split("\n")
+    for line in lines:
+        line = line.strip()
+        if line.startswith("$GP") or line.startswith("$GN"):
+            point = parse_nmea_sentence(line)
+            if point:
+                points.append(point)
+    return points
+
+
+def _get_video_info(probe_data: dict) -> tuple:
+    """Извлекает FPS и длительность из данных ffprobe."""
+    fps = 30.0
+    duration = 0.0
+
+    # Получаем длительность из формата
+    fmt = probe_data.get("format", {})
+    try:
+        duration = float(fmt.get("duration", 0))
+    except (ValueError, TypeError):
+        pass
+
+    # Ищем видеопоток для FPS
+    for stream in probe_data.get("streams", []):
+        if stream.get("codec_type") == "video":
+            # Пробуем r_frame_rate
+            r_frame_rate = stream.get("r_frame_rate", "30/1")
+            try:
+                num, den = r_frame_rate.split("/")
+                fps = float(num) / float(den)
+            except (ValueError, ZeroDivisionError):
+                pass
+            # Длительность потока, если не было в формате
+            if duration == 0:
+                try:
+                    duration = float(stream.get("duration", 0))
+                except (ValueError, TypeError):
+                    pass
+            break
+
+    return fps, duration
+
+
+def generate_demo_telemetry(duration: float = 60.0, fps: float = 30.0) -> dict:
+    """
+    Генерирует демонстрационную телеметрию для тестирования без реального видео.
+    Создаёт круговой маршрут вокруг центральной точки.
+    """
+    # Центральная точка (Москва)
+    center_lat = 55.7558
+    center_lon = 37.6173
+    radius_deg = 0.005  # примерно 500 метров
+
+    points = []
+    num_points = int(duration)  # одна точка в секунду
+
+    for i in range(num_points):
+        t = float(i)
+        angle = (2 * math.pi * i / num_points)
+
+        lat = center_lat + radius_deg * math.sin(angle)
+        lon = center_lon + radius_deg * math.cos(angle)
+
+        # Скорость: синусоидальная от 10 до 40 км/ч → м/с
+        speed_kmh = 25 + 15 * math.sin(angle * 2)
+        speed_ms = speed_kmh / 3.6
+
+        # Высота: небольшие изменения
+        alt = 100.0 + 10 * math.sin(angle * 3)
+
+        # Курс: по кругу
+        heading = (math.degrees(angle) + 90) % 360
+
+        points.append({
+            "t": t,
+            "lat": lat,
+            "lon": lon,
+            "speed": speed_ms,
+            "alt": alt,
+            "heading": heading
+        })
+
+    return {
+        "fps": fps,
+        "duration": duration,
+        "points": points,
+        "source": "demo"
+    }
+
+
+def extract_telemetry(video_path: str) -> dict:
+    """
+    Извлекает телеметрию из видеофайла DJI.
+
+    Аргументы:
+        video_path: путь к видеофайлу MP4/MOV
+
+    Возвращает:
+        Словарь с ключами fps, duration, points
+    """
+    video_path = str(video_path)
+
+    if not os.path.exists(video_path):
+        print(f"Ошибка: файл не найден: {video_path}")
+        return generate_demo_telemetry()
+
+    # Получаем информацию о видео
+    probe_data = _run_ffprobe(video_path)
+    if probe_data is None:
+        print("Не удалось получить информацию о видео. Используется демонстрационная телеметрия.")
+        return generate_demo_telemetry()
+
+    fps, duration = _get_video_info(probe_data)
+
+    if duration <= 0:
+        print("Предупреждение: длительность видео не определена. Используется 60 секунд.")
+        duration = 60.0
+
+    print(f"Видео: FPS={fps}, длительность={duration:.1f}с")
+
+    # Пробуем извлечь поток данных
+    raw_data = _extract_data_stream(video_path)
+    points = []
+
+    if raw_data:
+        points = _parse_nmea_from_bytes(raw_data)
+        print(f"Найдено NMEA-точек: {len(points)}")
+
+    # Если NMEA не найдено, пробуем метаданные MP4
+    if not points:
+        points = _try_extract_mp4_metadata(video_path, probe_data)
+
+    # Если всё равно пусто — используем демо
+    if not points:
+        print("Телеметрия не найдена в видео. Используется демонстрационная телеметрия.")
+        return generate_demo_telemetry(duration, fps)
+
+    # Назначаем временные метки
+    if len(points) > 1:
+        for i, p in enumerate(points):
+            if p.t == 0.0 and i > 0:
+                p.t = duration * i / (len(points) - 1)
+
+    # Преобразуем в словари
+    points_dicts = [
+        {
+            "t": p.t,
+            "lat": p.lat,
+            "lon": p.lon,
+            "speed": p.speed,
+            "alt": p.alt,
+            "heading": p.heading
+        }
+        for p in points
+    ]
+
+    return {
+        "fps": fps,
+        "duration": duration,
+        "points": points_dicts,
+        "source": "video"
+    }
+
+
+def _try_extract_mp4_metadata(video_path: str, probe_data: dict) -> list:
+    """
+    Пробует извлечь GPS из метаданных MP4/MOV.
+    Для DJI видео данные могут быть в потоке с codec_tag 'gpmd' или 'tmcd'.
+    """
+    from core.parser import TelemetryPoint
+
+    points = []
+    streams = probe_data.get("streams", [])
+
+    # Ищем потоки с тегами GPS
+    for i, stream in enumerate(streams):
+        codec_tag = stream.get("codec_tag_string", "")
+        codec_type = stream.get("codec_type", "")
+
+        if codec_tag in ("gpmd", "tmcd", "meta") or codec_type == "data":
+            try:
+                cmd = [
+                    "ffmpeg",
+                    "-i", video_path,
+                    "-map", f"0:{i}",
+                    "-c", "copy",
+                    "-f", "data",
+                    "pipe:1"
+                ]
+                result = subprocess.run(cmd, capture_output=True, timeout=30)
+                if result.returncode == 0 and result.stdout:
+                    # Пробуем разобрать как NMEA
+                    extracted = _parse_nmea_from_bytes(result.stdout)
+                    if extracted:
+                        points.extend(extracted)
+                        break
+            except Exception:
+                continue
+
+    return points
