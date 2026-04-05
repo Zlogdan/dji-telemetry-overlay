@@ -331,9 +331,10 @@ class RenderEngine:
             else:
                 raw_points.append(p)
 
-        fps = float(telemetry.get("fps", 30.0))
-        duration = float(telemetry.get("duration", 60.0))
-        frame_points = interpolate_to_fps(raw_points, fps, duration)
+        if not raw_points:
+            return Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
 
-        idx = min(frame_index, len(frame_points) - 1)
-        return self.render_frame(idx, frame_points[idx], frame_points)
+        # Для превью индекс кадра идёт по исходным точкам телеметрии (ползунок UI),
+        # поэтому не интерполируем до FPS здесь, иначе индекс и визуал расходятся.
+        idx = max(0, min(frame_index, len(raw_points) - 1))
+        return self.render_frame(idx, raw_points[idx], raw_points)

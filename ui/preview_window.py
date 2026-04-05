@@ -3,7 +3,7 @@
 
 import logging
 
-from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtCore import Qt, QSize, QTimer
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
@@ -31,6 +31,9 @@ class PreviewWindow(QDialog):
         self.config = config
         self.current_frame_index = 0
         self.preview_pixmap = None
+        self._render_timer = QTimer(self)
+        self._render_timer.setSingleShot(True)
+        self._render_timer.timeout.connect(self._render_preview)
 
         # Главный layout
         main_layout = QVBoxLayout(self)
@@ -58,6 +61,7 @@ class PreviewWindow(QDialog):
         self.frame_slider.setTickPosition(QSlider.TicksBelow)
         self.frame_slider.setTickInterval(max(1, max_frame // 20) if max_frame > 0 else 1)
         self.frame_slider.sliderMoved.connect(self._on_slider_moved)
+        self.frame_slider.valueChanged.connect(self._on_slider_moved)
         slider_row.addWidget(QLabel("Кадр:"), 0)
         slider_row.addWidget(self.frame_slider, 1)
         control_layout.addLayout(slider_row)
@@ -96,6 +100,11 @@ class PreviewWindow(QDialog):
         """Обработчик движения ползунка."""
         self.current_frame_index = value
         self._update_frame_info()
+        self._schedule_preview_render()
+
+    def _schedule_preview_render(self):
+        """Планирует отрисовку превью с небольшой задержкой для плавности UI."""
+        self._render_timer.start(60)
 
     def _update_frame_info(self):
         """Обновляет информацию о текущем кадре."""
@@ -161,6 +170,7 @@ class PreviewWindow(QDialog):
             self.frame_slider.setValue(self.current_frame_index)
             self.frame_slider.blockSignals(False)
             self._update_frame_info()
+            self._schedule_preview_render()
 
     def _prev_frame(self):
         """Переходит на предыдущий кадр."""
@@ -170,6 +180,7 @@ class PreviewWindow(QDialog):
             self.frame_slider.setValue(self.current_frame_index)
             self.frame_slider.blockSignals(False)
             self._update_frame_info()
+            self._schedule_preview_render()
 
     def keyPressEvent(self, event):
         """Обработчик горячих клавиш."""

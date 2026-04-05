@@ -7,6 +7,7 @@
 import json
 import logging
 from pathlib import Path
+from typing import Optional
 
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QGroupBox, QFileDialog,
@@ -243,6 +244,14 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Сначала выберите видеофайл!")
             return
 
+        cached = self._load_cached_telemetry(video_path)
+        if cached is not None:
+            self.status_label.setText("Телеметрия загружена из файла рядом с видео")
+            self._on_telemetry_extracted(cached)
+            cache_path = self._get_telemetry_cache_path(video_path)
+            self.statusBar().showMessage(f"Загружен кэш телеметрии: {cache_path}")
+            return
+
         self.extract_btn.setEnabled(False)
         self.render_btn.setEnabled(False)
         self.status_label.setText("Извлечение телеметрии...")
@@ -273,6 +282,10 @@ class MainWindow(QMainWindow):
         self.extract_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
 
+        video_path = self.video_path_edit.text().strip()
+        if video_path:
+            self._save_cached_telemetry(video_path, telemetry)
+
         pts = telemetry.get("points", [])
         fps = telemetry.get("fps", 0)
         dur = telemetry.get("duration", 0)
@@ -298,8 +311,6 @@ class MainWindow(QMainWindow):
 
         if pts:
             self.render_btn.setEnabled(True)
-            # Открываем окно предпросмотра
-            self._show_preview_window()
             # Обновляем превью при загрузке новой телеметрии
             self._refresh_layout_preview()
         else:
@@ -308,6 +319,38 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Телеметрия не найдена")
             self.layout_canvas.set_preview_image(None)
             self.layout_status_label.setText("Телеметрия не найдена")
+
+    def _get_telemetry_cache_path(self, video_path: str) -> Path:
+        """Возвращает путь до кэша телеметрии рядом с видеофайлом."""
+        p = Path(video_path)
+        return p.with_suffix(f"{p.suffix}.telemetry.json")
+
+    def _load_cached_telemetry(self, video_path: str) -> Optional[dict]:
+        """Загружает кэш телеметрии, если он существует и валиден."""
+        cache_path = self._get_telemetry_cache_path(video_path)
+        if not cache_path.exists():
+            return None
+
+        try:
+            with cache_path.open("r", encoding="utf-8") as f:
+                telemetry = json.load(f)
+            if not isinstance(telemetry, dict):
+                return None
+            if not isinstance(telemetry.get("points", []), list):
+                return None
+            return telemetry
+        except Exception as e:
+            logger.warning("Не удалось загрузить кэш телеметрии %s: %s", cache_path, e)
+            return None
+
+    def _save_cached_telemetry(self, video_path: str, telemetry: dict):
+        """Сохраняет телеметрию в кэш рядом с видеофайлом."""
+        cache_path = self._get_telemetry_cache_path(video_path)
+        try:
+            with cache_path.open("w", encoding="utf-8") as f:
+                json.dump(telemetry, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning("Не удалось сохранить кэш телеметрии %s: %s", cache_path, e)
 
     def _on_extraction_error(self, error_msg: str):
         """Обрабатывает ошибку извлечения."""

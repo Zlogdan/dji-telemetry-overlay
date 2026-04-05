@@ -83,7 +83,6 @@ def build_settings_tab(window) -> QWidget:
     layout.setSpacing(10)
     layout.setContentsMargins(12, 12, 12, 12)
 
-    layout.addWidget(build_modules_group(window))
     layout.addWidget(build_params_group(window))
     layout.addWidget(build_export_group(window))
     layout.addWidget(build_performance_group(window))
@@ -115,6 +114,14 @@ def build_layout_tab(window) -> QWidget:
     top_layout.addWidget(window.layout_canvas, 1)
 
     main_layout.addWidget(top_panel, 1)
+
+    right_panel = QWidget()
+    right_layout = QVBoxLayout(right_panel)
+    right_layout.setContentsMargins(0, 0, 0, 0)
+    right_layout.setSpacing(8)
+
+    right_layout.addWidget(build_modules_group(window))
+    right_layout.addWidget(build_map_controls_group(window))
 
     panel = QGroupBox("Выбранный модуль")
     form = QFormLayout(panel)
@@ -151,7 +158,9 @@ def build_layout_tab(window) -> QWidget:
     preview_btn.clicked.connect(window._show_preview_window)
     form.addRow(preview_btn)
 
-    main_layout.addWidget(panel)
+    right_layout.addWidget(panel)
+    right_layout.addStretch()
+    main_layout.addWidget(right_panel)
 
     window._refresh_layout_module_list()
     return widget
@@ -283,6 +292,30 @@ def build_params_group(window) -> QGroupBox:
     layout = QFormLayout(group)
     layout.setSpacing(6)
 
+    # Размер кадра
+    window.width_spin = QSpinBox()
+    window.width_spin.setRange(320, 7680)
+    window.width_spin.setValue(window.config_manager.config.get("width", 1920))
+    window.width_spin.setSingleStep(16)
+    window.width_spin.valueChanged.connect(lambda v: window._update_canvas_size("width", v))
+    layout.addRow("Ширина кадра:", window.width_spin)
+
+    window.height_spin = QSpinBox()
+    window.height_spin.setRange(240, 4320)
+    window.height_spin.setValue(window.config_manager.config.get("height", 1080))
+    window.height_spin.setSingleStep(16)
+    window.height_spin.valueChanged.connect(lambda v: window._update_canvas_size("height", v))
+    layout.addRow("Высота кадра:", window.height_spin)
+
+    return group
+
+
+def build_map_controls_group(window) -> QGroupBox:
+    """Группа настройки карты и спидометра на вкладке расположения."""
+    group = QGroupBox("Карта и скорость")
+    layout = QFormLayout(group)
+    layout.setSpacing(6)
+
     # Масштаб карты
     window.zoom_spin = QSpinBox()
     window.zoom_spin.setRange(1, 19)
@@ -309,21 +342,6 @@ def build_params_group(window) -> QGroupBox:
     window.max_speed_spin.setSuffix(" км/ч")
     window.max_speed_spin.valueChanged.connect(window._update_max_speed)
     layout.addRow("Макс. скорость:", window.max_speed_spin)
-
-    # Размер кадра
-    window.width_spin = QSpinBox()
-    window.width_spin.setRange(320, 7680)
-    window.width_spin.setValue(window.config_manager.config.get("width", 1920))
-    window.width_spin.setSingleStep(16)
-    window.width_spin.valueChanged.connect(lambda v: window._update_canvas_size("width", v))
-    layout.addRow("Ширина кадра:", window.width_spin)
-
-    window.height_spin = QSpinBox()
-    window.height_spin.setRange(240, 4320)
-    window.height_spin.setValue(window.config_manager.config.get("height", 1080))
-    window.height_spin.setSingleStep(16)
-    window.height_spin.valueChanged.connect(lambda v: window._update_canvas_size("height", v))
-    layout.addRow("Высота кадра:", window.height_spin)
 
     return group
 
