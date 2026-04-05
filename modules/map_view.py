@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Модуль карты. Отображает GPS-трек на карте OpenStreetMap.
+Модуль карты. Отображает GPS-трек на выбранной карте (OSM, Яндекс, Google).
 """
 
 import math
@@ -25,6 +25,22 @@ TILE_CACHE_DIR = Path.home() / ".cache" / "telemetry-overlay" / "tiles"
 # Заголовки запроса тайлов
 TILE_HEADERS = {"User-Agent": "DJI-Telemetry-Overlay/1.0"}
 
+# Провайдеры карт: шаблоны URL тайлов (параметры {z}, {x}, {y})
+MAP_PROVIDERS = {
+    "osm":        "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    "yandex_map": "https://core-renderer-tiles.maps.yandex.net/tiles?l=map&x={x}&y={y}&z={z}&scale=1&lang=ru_RU",
+    "yandex_sat": "https://core-sat.maps.yandex.net/tiles?l=sat&x={x}&y={y}&z={z}&scale=1&lang=ru_RU",
+    "google_sat": "https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+}
+
+# Человекочитаемые названия провайдеров
+MAP_PROVIDER_LABELS = {
+    "osm":        "OpenStreetMap",
+    "yandex_map": "Яндекс Карты",
+    "yandex_sat": "Яндекс Спутник",
+    "google_sat": "Google Спутник",
+}
+
 
 def lat_lon_to_tile(lat: float, lon: float, zoom: int) -> Tuple[int, int]:
     """Конвертирует координаты в номер тайла Web Mercator."""
@@ -44,14 +60,20 @@ def lat_lon_to_pixel(lat: float, lon: float, zoom: int, tile_size: int = 256) ->
     return px, py
 
 
-def _get_tile_cache_path(zoom: int, x: int, y: int) -> Path:
+def _get_tile_cache_path(provider: str, zoom: int, x: int, y: int) -> Path:
     """Возвращает путь к кешированному тайлу."""
-    return TILE_CACHE_DIR / str(zoom) / str(x) / f"{y}.png"
+    return TILE_CACHE_DIR / provider / str(zoom) / str(x) / f"{y}.png"
 
 
-def _download_tile(zoom: int, x: int, y: int) -> Optional[Image.Image]:
-    """Скачивает тайл с OpenStreetMap или берёт из кеша."""
-    cache_path = _get_tile_cache_path(zoom, x, y)
+def _build_tile_url(provider: str, zoom: int, x: int, y: int) -> str:
+    """Формирует URL тайла для указанного провайдера."""
+    template = MAP_PROVIDERS.get(provider, MAP_PROVIDERS["osm"])
+    return template.format(z=zoom, x=x, y=y)
+
+
+def _download_tile(provider: str, zoom: int, x: int, y: int) -> Optional[Image.Image]:
+    """Скачивает тайл у указанного провайдера или берёт из кеша."""
+    cache_path = _get_tile_cache_path(provider, zoom, x, y)
 
     # Проверяем кеш
     if cache_path.exists():
@@ -64,7 +86,7 @@ def _download_tile(zoom: int, x: int, y: int) -> Optional[Image.Image]:
         return None
 
     # Скачиваем тайл
-    url = f"https://tile.openstreetmap.org/{zoom}/{x}/{y}.png"
+    url = _build_tile_url(provider, zoom, x, y)
     try:
         response = requests.get(url, headers=TILE_HEADERS, timeout=5)
         if response.status_code == 200:
@@ -101,13 +123,14 @@ class MapModule(OverlayModule):
     def __init__(self, config: dict):
         super().__init__(config)
         self.zoom = config.get("zoom", 14)
+        self.map_provider = config.get("map_provider", "osm")
         self._tile_cache = {}  # кеш загруженных тайлов в памяти
 
     def _get_tile(self, zoom: int, x: int, y: int) -> Optional[Image.Image]:
         """Получает тайл из памяти или скачивает."""
-        key = (zoom, x, y)
+        key = (self.map_provider, zoom, x, y)
         if key not in self._tile_cache:
-            self._tile_cache[key] = _download_tile(zoom, x, y)
+            self._tile_cache[key] = _download_tile(self.map_provider, zoom, x, y)
         return self._tile_cache[key]
 
     def _build_map_image(self, center_lat: float, center_lon: float) -> Tuple[Image.Image, float, float]:
