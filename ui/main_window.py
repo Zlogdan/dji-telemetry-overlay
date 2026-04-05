@@ -9,19 +9,13 @@ import logging
 from pathlib import Path
 
 from PyQt5.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QLineEdit, QFileDialog,
-    QGroupBox, QCheckBox, QSpinBox, QDoubleSpinBox,
-    QTextEdit, QProgressBar,
-    QAction, QSplitter, QFrame, QScrollArea,
-    QFormLayout, QMessageBox, QComboBox, QTabWidget, QApplication,
+    QMainWindow, QWidget, QGroupBox, QFileDialog,
+    QAction, QMessageBox, QApplication,
 )
 from PyQt5.QtCore import Qt, QThread
-from PyQt5.QtGui import QFont
 
 from config.config_manager import ConfigManager
-from modules.map_view import MAP_PROVIDERS, MAP_PROVIDER_LABELS
-from ui.layout_canvas import ModuleLayoutCanvas
+from ui import main_window_builders as builders
 from ui.preview_window import PreviewWindow
 from ui.workers import TelemetryWorker, RenderWorker
 
@@ -51,444 +45,47 @@ class MainWindow(QMainWindow):
 
     def _setup_ui(self):
         """Строит основной интерфейс."""
-        self.tabs = QTabWidget()
-        self.tabs.currentChanged.connect(self._on_tab_changed)
-        self.setCentralWidget(self.tabs)
-
-        self.tabs.addTab(self._build_main_tab(), "Основное")
-        self.tabs.addTab(self._build_settings_tab(), "Настройки")
-        self.tabs.addTab(self._build_layout_tab(), "Расположение")
+        builders.setup_ui(self)
 
     def _build_main_tab(self) -> QWidget:
         """Вкладка «Основное»: файлы, действия и предпросмотр."""
-        widget = QWidget()
-        main_layout = QHBoxLayout(widget)
-        main_layout.setSpacing(8)
-
-        splitter = QSplitter(Qt.Horizontal)
-        main_layout.addWidget(splitter)
-
-        # Левая панель управления
-        left_widget = QWidget()
-        left_widget.setMaximumWidth(380)
-        left_layout = QVBoxLayout(left_widget)
-        left_layout.setSpacing(6)
-
-        left_layout.addWidget(self._build_files_group())
-        left_layout.addWidget(self._build_actions_group())
-        left_layout.addStretch()
-
-        # Правая панель результатов
-        right_widget = QWidget()
-        right_layout = QVBoxLayout(right_widget)
-        right_layout.setSpacing(6)
-        right_layout.addWidget(self._build_preview_group())
-
-        splitter.addWidget(left_widget)
-        splitter.addWidget(right_widget)
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-
-        return widget
+        return builders.build_main_tab(self)
 
     def _build_settings_tab(self) -> QWidget:
         """Вкладка «Настройки»: модули, параметры отображения, производительность."""
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        layout.setSpacing(10)
-        layout.setContentsMargins(12, 12, 12, 12)
-
-        layout.addWidget(self._build_modules_group())
-        layout.addWidget(self._build_params_group())
-        layout.addWidget(self._build_export_group())
-        layout.addWidget(self._build_performance_group())
-        layout.addStretch()
-
-        scroll.setWidget(container)
-        return scroll
+        return builders.build_settings_tab(self)
 
     def _build_layout_tab(self) -> QWidget:
         """Вкладка визуального позиционирования модулей."""
-        widget = QWidget()
-        main_layout = QHBoxLayout(widget)
-        main_layout.setSpacing(8)
-
-        # Верхняя панель со статусом
-        top_panel = QWidget()
-        top_layout = QVBoxLayout(top_panel)
-        top_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.layout_status_label = QLabel("Загрузите телеметрию для просмотра превью")
-        self.layout_status_label.setStyleSheet("color: #6B8E23; font-size: 11px;")
-        top_layout.addWidget(self.layout_status_label)
-
-        # Холст карты
-        self.layout_canvas = ModuleLayoutCanvas(self.config_manager.config)
-        self.layout_canvas.set_show_preview(True)  # Явно включаем отображение превью
-        self.layout_canvas.moduleMoved.connect(self._sync_layout_controls)
-        top_layout.addWidget(self.layout_canvas, 1)
-
-        main_layout.addWidget(top_panel, 1)
-
-        panel = QGroupBox("Выбранный модуль")
-        form = QFormLayout(panel)
-
-        self.layout_module_combo = QComboBox()
-        self.layout_module_combo.currentIndexChanged.connect(self._on_layout_module_changed)
-        form.addRow("Модуль:", self.layout_module_combo)
-
-        self.layout_x_spin = QSpinBox()
-        self.layout_x_spin.setRange(0, 10000)
-        self.layout_x_spin.valueChanged.connect(self._update_layout_module)
-        form.addRow("X:", self.layout_x_spin)
-
-        self.layout_y_spin = QSpinBox()
-        self.layout_y_spin.setRange(0, 10000)
-        self.layout_y_spin.valueChanged.connect(self._update_layout_module)
-        form.addRow("Y:", self.layout_y_spin)
-
-        self.layout_w_spin = QSpinBox()
-        self.layout_w_spin.setRange(20, 4000)
-        self.layout_w_spin.valueChanged.connect(self._update_layout_module)
-        form.addRow("Ширина:", self.layout_w_spin)
-
-        self.layout_h_spin = QSpinBox()
-        self.layout_h_spin.setRange(20, 4000)
-        self.layout_h_spin.valueChanged.connect(self._update_layout_module)
-        form.addRow("Высота:", self.layout_h_spin)
-
-        apply_bounds_btn = QPushButton("Прижать к границам")
-        apply_bounds_btn.clicked.connect(self._clamp_layout_modules)
-        form.addRow(apply_bounds_btn)
-
-        preview_btn = QPushButton("Открыть полный предпросмотр")
-        preview_btn.clicked.connect(self._show_preview_window)
-        form.addRow(preview_btn)
-
-        main_layout.addWidget(panel)
-
-        self._refresh_layout_module_list()
-        return widget
+        return builders.build_layout_tab(self)
 
     def _build_files_group(self) -> QGroupBox:
         """Группа выбора файлов."""
-        group = QGroupBox("Файлы")
-        layout = QFormLayout(group)
-        layout.setSpacing(6)
-
-        # Исходное видео
-        video_row = QWidget()
-        video_layout = QHBoxLayout(video_row)
-        video_layout.setContentsMargins(0, 0, 0, 0)
-        self.video_path_edit = QLineEdit()
-        self.video_path_edit.setReadOnly(True)
-        self.video_path_edit.setPlaceholderText("Не выбран...")
-        browse_video_btn = QPushButton("Обзор...")
-        browse_video_btn.setFixedWidth(80)
-        browse_video_btn.clicked.connect(self._browse_video)
-        video_layout.addWidget(self.video_path_edit)
-        video_layout.addWidget(browse_video_btn)
-        layout.addRow("Исходное видео:", video_row)
-
-        # Выходной файл
-        output_row = QWidget()
-        output_layout = QHBoxLayout(output_row)
-        output_layout.setContentsMargins(0, 0, 0, 0)
-        self.output_path_edit = QLineEdit()
-        self.output_path_edit.setPlaceholderText("overlay_output.mov")
-        browse_output_btn = QPushButton("Обзор...")
-        browse_output_btn.setFixedWidth(80)
-        browse_output_btn.clicked.connect(self._browse_output)
-        output_layout.addWidget(self.output_path_edit)
-        output_layout.addWidget(browse_output_btn)
-        layout.addRow("Выходной файл:", output_row)
-
-        return group
+        return builders.build_files_group(self)
 
     def _build_actions_group(self) -> QGroupBox:
         """Группа кнопок действий."""
-        group = QGroupBox("Действия")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(6)
-
-        # Кнопка извлечения телеметрии
-        self.extract_btn = QPushButton("Извлечь телеметрию")
-        self.extract_btn.setMinimumHeight(38)
-        self.extract_btn.setStyleSheet(
-            "QPushButton { background-color: #2d7a2d; color: white; font-weight: bold; border-radius: 4px; }"
-            "QPushButton:hover { background-color: #3a9e3a; }"
-            "QPushButton:disabled { background-color: #555; color: #888; }"
-        )
-        self.extract_btn.clicked.connect(self._extract_telemetry)
-        layout.addWidget(self.extract_btn)
-
-        # Кнопка создания оверлея
-        self.render_btn = QPushButton("Создать оверлей")
-        self.render_btn.setMinimumHeight(38)
-        self.render_btn.setEnabled(False)
-        self.render_btn.setStyleSheet(
-            "QPushButton { background-color: #1a5a8a; color: white; font-weight: bold; border-radius: 4px; }"
-            "QPushButton:hover { background-color: #2070aa; }"
-            "QPushButton:disabled { background-color: #555; color: #888; }"
-        )
-        self.render_btn.clicked.connect(self._render_overlay)
-        layout.addWidget(self.render_btn)
-
-        # Прогресс-бар
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setVisible(False)
-        self.progress_bar.setTextVisible(True)
-        layout.addWidget(self.progress_bar)
-
-        # Статус
-        self.status_label = QLabel("Готов к работе")
-        self.status_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        layout.addWidget(self.status_label)
-
-        return group
+        return builders.build_actions_group(self)
 
     def _build_modules_group(self) -> QGroupBox:
         """Группа выбора активных модулей."""
-        group = QGroupBox("Модули")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(4)
-
-        self.module_checkboxes = {}
-        modules_cfg = self.config_manager.config.get("modules", [])
-
-        # Маппинг типов на русские названия
-        module_labels = {
-            "speedometer": "Спидометр",
-            "map": "Карта",
-            "heading": "Компас",
-        }
-
-        # Текстовые поля
-        text_modules = [m for m in modules_cfg if m.get("type") == "text"]
-        for i, tm in enumerate(text_modules):
-            field = tm.get("field", "")
-            label = tm.get("label", f"Текст ({field})")
-            cb = QCheckBox(f"Текст ({label})")
-            cb.setChecked(tm.get("enabled", True))
-            # Захватываем type_str и module_idx явно чтобы избежать проблем с замыканием
-            cb.stateChanged.connect(lambda state, type_str="text", module_idx=i: self._toggle_module(type_str, state, module_idx))
-            layout.addWidget(cb)
-            self.module_checkboxes[f"text_{field}_{i}"] = (cb, "text", i)
-
-        # Остальные модули
-        for type_key, type_label in module_labels.items():
-            matching = [m for m in modules_cfg if m.get("type") == type_key]
-            for idx, mod in enumerate(matching):
-                cb = QCheckBox(type_label)
-                cb.setChecked(mod.get("enabled", True))
-                cb.stateChanged.connect(lambda state, type_str=type_key, module_idx=idx: self._toggle_module(type_str, state, module_idx))
-                layout.addWidget(cb)
-                self.module_checkboxes[f"{type_key}_{idx}"] = (cb, type_key, idx)
-
-        return group
+        return builders.build_modules_group(self)
 
     def _build_params_group(self) -> QGroupBox:
         """Группа настройки параметров."""
-        group = QGroupBox("Параметры")
-        layout = QFormLayout(group)
-        layout.setSpacing(6)
-
-        # Масштаб карты
-        self.zoom_spin = QSpinBox()
-        self.zoom_spin.setRange(1, 19)
-        self.zoom_spin.setValue(14)
-        self.zoom_spin.setSuffix("  (уровень)")
-        self.zoom_spin.valueChanged.connect(self._update_map_zoom)
-        layout.addRow("Масштаб карты:", self.zoom_spin)
-
-        # Провайдер карты
-        self.map_provider_combo = QComboBox()
-        for key in MAP_PROVIDERS:
-            self.map_provider_combo.addItem(MAP_PROVIDER_LABELS.get(key, key), key)
-        current_provider = self._get_current_map_provider()
-        idx = self.map_provider_combo.findData(current_provider)
-        if idx >= 0:
-            self.map_provider_combo.setCurrentIndex(idx)
-        self.map_provider_combo.currentIndexChanged.connect(self._update_map_provider)
-        layout.addRow("Провайдер карты:", self.map_provider_combo)
-
-        # Максимальная скорость
-        self.max_speed_spin = QSpinBox()
-        self.max_speed_spin.setRange(10, 500)
-        self.max_speed_spin.setValue(150)
-        self.max_speed_spin.setSuffix(" км/ч")
-        self.max_speed_spin.valueChanged.connect(self._update_max_speed)
-        layout.addRow("Макс. скорость:", self.max_speed_spin)
-
-        # Размер кадра
-        self.width_spin = QSpinBox()
-        self.width_spin.setRange(320, 7680)
-        self.width_spin.setValue(self.config_manager.config.get("width", 1920))
-        self.width_spin.setSingleStep(16)
-        self.width_spin.valueChanged.connect(lambda v: self._update_canvas_size("width", v))
-        layout.addRow("Ширина кадра:", self.width_spin)
-
-        self.height_spin = QSpinBox()
-        self.height_spin.setRange(240, 4320)
-        self.height_spin.setValue(self.config_manager.config.get("height", 1080))
-        self.height_spin.setSingleStep(16)
-        self.height_spin.valueChanged.connect(lambda v: self._update_canvas_size("height", v))
-        layout.addRow("Высота кадра:", self.height_spin)
-
-        return group
+        return builders.build_params_group(self)
 
     def _build_export_group(self) -> QGroupBox:
         """Группа настроек экспорта: режим, формат, FPS."""
-        group = QGroupBox("Экспорт")
-        layout = QFormLayout(group)
-        layout.setSpacing(6)
-
-        export_cfg = self.config_manager.config.setdefault("export", {})
-
-        self.export_mode_combo = QComboBox()
-        self.export_mode_combo.addItem("Видео", "video")
-        self.export_mode_combo.addItem("PNG sequence", "png_sequence")
-        mode = str(export_cfg.get("mode", "video"))
-        mode_idx = self.export_mode_combo.findData(mode)
-        self.export_mode_combo.setCurrentIndex(mode_idx if mode_idx >= 0 else 0)
-        self.export_mode_combo.currentIndexChanged.connect(self._on_export_mode_changed)
-        layout.addRow("Режим:", self.export_mode_combo)
-
-        self.output_format_combo = QComboBox()
-        self.output_format_combo.addItem("ProRes MOV (alpha)", "mov")
-        self.output_format_combo.addItem("WebM VP9 (alpha)", "webm")
-        out_fmt = str(export_cfg.get("output_format", "mov"))
-        fmt_idx = self.output_format_combo.findData(out_fmt)
-        self.output_format_combo.setCurrentIndex(fmt_idx if fmt_idx >= 0 else 0)
-        self.output_format_combo.currentIndexChanged.connect(self._on_output_format_changed)
-        layout.addRow("Формат:", self.output_format_combo)
-
-        self.render_fps_spin = QDoubleSpinBox()
-        self.render_fps_spin.setRange(0.0, 240.0)
-        self.render_fps_spin.setDecimals(2)
-        self.render_fps_spin.setSingleStep(1.0)
-        self.render_fps_spin.setValue(float(export_cfg.get("render_fps", 30)))
-        self.render_fps_spin.setToolTip(
-            "FPS оверлея. 0 = использовать FPS исходного видео.\n"
-            "Для экономии размера обычно 1-30 FPS."
-        )
-        self.render_fps_spin.valueChanged.connect(lambda v: self._update_export_config("render_fps", float(v)))
-        layout.addRow("FPS оверлея:", self.render_fps_spin)
-
-        return group
+        return builders.build_export_group(self)
 
     def _build_performance_group(self) -> QGroupBox:
         """Группа настроек производительности (актуально для 4K/120fps)."""
-        group = QGroupBox("Производительность (4K / 120fps)")
-        layout = QFormLayout(group)
-        layout.setSpacing(6)
-
-        perf = self.config_manager.config.get("performance", {})
-
-        # Таймаут ffprobe
-        self.ffprobe_timeout_spin = QSpinBox()
-        self.ffprobe_timeout_spin.setRange(10, 600)
-        self.ffprobe_timeout_spin.setValue(int(perf.get("ffprobe_timeout", 30)))
-        self.ffprobe_timeout_spin.setSuffix(" с")
-        self.ffprobe_timeout_spin.setToolTip(
-            "Максимальное время ожидания при анализе видеофайла (ffprobe).\n"
-            "Для файлов 8+ ГБ рекомендуется увеличить до 120–300 с."
-        )
-        self.ffprobe_timeout_spin.valueChanged.connect(
-            lambda v: self._update_perf_config("ffprobe_timeout", v)
-        )
-        layout.addRow("Таймаут ffprobe:", self.ffprobe_timeout_spin)
-
-        # Таймаут ffmpeg
-        self.ffmpeg_timeout_spin = QSpinBox()
-        self.ffmpeg_timeout_spin.setRange(10, 600)
-        self.ffmpeg_timeout_spin.setValue(int(perf.get("ffmpeg_timeout", 60)))
-        self.ffmpeg_timeout_spin.setSuffix(" с")
-        self.ffmpeg_timeout_spin.setToolTip(
-            "Максимальное время ожидания при извлечении потока данных (ffmpeg).\n"
-            "Для длинных видео рекомендуется увеличить до 120–300 с."
-        )
-        self.ffmpeg_timeout_spin.valueChanged.connect(
-            lambda v: self._update_perf_config("ffmpeg_timeout", v)
-        )
-        layout.addRow("Таймаут ffmpeg:", self.ffmpeg_timeout_spin)
-
-        # Уровень сжатия PNG
-        self.png_compress_spin = QSpinBox()
-        self.png_compress_spin.setRange(0, 9)
-        self.png_compress_spin.setValue(int(perf.get("png_compress_level", 1)))
-        self.png_compress_spin.setToolTip(
-            "Уровень сжатия PNG-кадров при рендеринге.\n"
-            "0 — без сжатия (быстрее, больше нагрузка на pipe).\n"
-            "1 — быстрое сжатие (рекомендуется для 4K/120fps).\n"
-            "9 — максимальное сжатие (медленнее)."
-        )
-        self.png_compress_spin.valueChanged.connect(
-            lambda v: self._update_perf_config("png_compress_level", v)
-        )
-        layout.addRow("Сжатие PNG (0–9):", self.png_compress_spin)
-
-        self.prores_qscale_spin = QSpinBox()
-        self.prores_qscale_spin.setRange(1, 31)
-        self.prores_qscale_spin.setValue(int(perf.get("prores_qscale", 11)))
-        self.prores_qscale_spin.setToolTip("Качество ProRes: меньше значение = выше качество и больше размер.")
-        self.prores_qscale_spin.valueChanged.connect(
-            lambda v: self._update_perf_config("prores_qscale", v)
-        )
-        layout.addRow("ProRes qscale (1-31):", self.prores_qscale_spin)
-
-        self.vp9_crf_spin = QSpinBox()
-        self.vp9_crf_spin.setRange(0, 63)
-        self.vp9_crf_spin.setValue(int(perf.get("vp9_crf", 34)))
-        self.vp9_crf_spin.setToolTip("Качество VP9: меньше значение = выше качество и больше размер.")
-        self.vp9_crf_spin.valueChanged.connect(
-            lambda v: self._update_perf_config("vp9_crf", v)
-        )
-        layout.addRow("VP9 CRF (0-63):", self.vp9_crf_spin)
-
-        self.vp9_cpu_spin = QSpinBox()
-        self.vp9_cpu_spin.setRange(0, 8)
-        self.vp9_cpu_spin.setValue(int(perf.get("vp9_cpu_used", 2)))
-        self.vp9_cpu_spin.setToolTip("Скорость кодирования VP9: больше значение = быстрее, но хуже сжатие.")
-        self.vp9_cpu_spin.valueChanged.connect(
-            lambda v: self._update_perf_config("vp9_cpu_used", v)
-        )
-        layout.addRow("VP9 cpu-used (0-8):", self.vp9_cpu_spin)
-
-        hint = QLabel(
-            "⚠ Для видео 4K/120fps рекомендуется: таймауты 120–300 с, сжатие PNG = 0 или 1."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #aaa; font-size: 11px;")
-        layout.addRow(hint)
-
-        return group
+        return builders.build_performance_group(self)
 
     def _build_preview_group(self) -> QGroupBox:
         """Правая панель предпросмотра телеметрии."""
-        group = QGroupBox("Предпросмотр телеметрии")
-        layout = QVBoxLayout(group)
-
-        # Метаданные
-        self.meta_label = QLabel("Нет данных телеметрии")
-        self.meta_label.setStyleSheet("color: #aaa; font-size: 12px;")
-        layout.addWidget(self.meta_label)
-
-        # Текстовая область с телеметрией
-        self.telemetry_text = QTextEdit()
-        self.telemetry_text.setReadOnly(True)
-        self.telemetry_text.setFont(QFont("Monospace", 10))
-        self.telemetry_text.setPlaceholderText(
-            "Здесь будет отображаться извлечённая телеметрия в формате JSON...\n\n"
-            "Выберите видеофайл и нажмите «Извлечь телеметрию»."
-        )
-        layout.addWidget(self.telemetry_text)
-
-        return group
+        return builders.build_preview_group(self)
 
     # ── Меню ────────────────────────────────────────────────────────
 
