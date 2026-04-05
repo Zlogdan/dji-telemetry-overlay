@@ -19,6 +19,7 @@
       "width": 300,
       "height": 300,
       "zoom": 14,
+      "map_provider": "osm",
       "enabled": true
     },
     {

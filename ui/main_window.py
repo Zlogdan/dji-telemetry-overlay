@@ -15,12 +15,13 @@ from PyQt5.QtWidgets import (
     QGroupBox, QCheckBox, QSpinBox, QDoubleSpinBox,
     QTextEdit, QProgressBar, QStatusBar, QMenuBar,
     QAction, QSplitter, QFrame, QScrollArea,
-    QFormLayout, QMessageBox
+    QFormLayout, QMessageBox, QComboBox
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
 from PyQt5.QtGui import QFont, QColor, QPalette
 
 from config.config_manager import ConfigManager
+from modules.map_view import MAP_PROVIDERS, MAP_PROVIDER_LABELS
 
 
 class TelemetryWorker(QObject):
@@ -270,6 +271,17 @@ class MainWindow(QMainWindow):
         self.zoom_spin.setSuffix("  (уровень)")
         self.zoom_spin.valueChanged.connect(self._update_map_zoom)
         layout.addRow("Масштаб карты:", self.zoom_spin)
+
+        # Провайдер карты
+        self.map_provider_combo = QComboBox()
+        for key in MAP_PROVIDERS:
+            self.map_provider_combo.addItem(MAP_PROVIDER_LABELS.get(key, key), key)
+        current_provider = self._get_current_map_provider()
+        idx = self.map_provider_combo.findData(current_provider)
+        if idx >= 0:
+            self.map_provider_combo.setCurrentIndex(idx)
+        self.map_provider_combo.currentIndexChanged.connect(self._update_map_provider)
+        layout.addRow("Провайдер карты:", self.map_provider_combo)
 
         # Максимальная скорость
         self.max_speed_spin = QSpinBox()
@@ -547,6 +559,20 @@ class MainWindow(QMainWindow):
         for mod in self.config_manager.config.get("modules", []):
             if mod.get("type") == "map":
                 mod["zoom"] = value
+
+    def _get_current_map_provider(self) -> str:
+        """Возвращает текущий провайдер карты из конфигурации."""
+        for mod in self.config_manager.config.get("modules", []):
+            if mod.get("type") == "map":
+                return mod.get("map_provider", "osm")
+        return "osm"
+
+    def _update_map_provider(self, index: int):
+        """Обновляет провайдер карты в конфигурации."""
+        provider = self.map_provider_combo.itemData(index)
+        for mod in self.config_manager.config.get("modules", []):
+            if mod.get("type") == "map":
+                mod["map_provider"] = provider
 
     def _update_max_speed(self, value: int):
         """Обновляет максимальную скорость в конфигурации."""
