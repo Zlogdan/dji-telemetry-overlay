@@ -22,12 +22,16 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Эксцентриситет эллипсоида WGS84 для формулы проекции Яндекса.
+WGS84_ECCENTRICITY = 0.0818191908426
+
 # Кеш-директория для тайлов
 TILE_CACHE_DIR = Path.home() / ".cache" / "telemetry-overlay" / "tiles"
 
 # Заголовки запроса тайлов
 TILE_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+    "Referer": "https://yandex.ru/maps/"
 }
 
 # Максимальное количество тайлов в памяти
@@ -36,7 +40,7 @@ MAX_TILE_CACHE_SIZE = 256
 # Провайдеры карт: шаблоны URL тайлов (параметры {z}, {x}, {y})
 MAP_PROVIDERS = {
     "osm":        "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-    "yandex_map": "https://core-renderer-tiles.maps.yandex.net/tiles?l=map&x={x}&y={y}&z={z}&scale=1&lang=ru_RU",
+    "yandex_map": "https://core-renderer-tiles.maps.yandex.net/tiles?l=map&x={x}&y={y}&z={z}&scale=1",
     "yandex_sat": "https://core-sat.maps.yandex.net/tiles?l=sat&x={x}&y={y}&z={z}&scale=1",
     "google_sat": "https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
 }
@@ -66,6 +70,30 @@ def lat_lon_to_pixel(lat: float, lon: float, zoom: int, tile_size: int = 256) ->
     lat_rad = math.radians(lat)
     py = (1 - math.log(math.tan(lat_rad) + 1 / math.cos(lat_rad)) / math.pi) / 2 * n * tile_size
     return px, py
+
+
+def lat_lon_to_pixel_yandex(lat: float, lon: float, zoom: int, tile_size: int = 256) -> Tuple[float, float]:
+    """Конвертирует координаты в пиксельные координаты проекции Яндекса."""
+    n = 2 ** zoom
+    px = (lon + 180.0) / 360.0 * n * tile_size
+
+    # Яндекс использует эллипсоидальную формулу Меркатора (не сферическую).
+    lat_clamped = max(min(lat, 85.0), -85.0)
+    lat_rad = math.radians(lat_clamped)
+    sin_lat = math.sin(lat_rad)
+    e = WGS84_ECCENTRICITY
+    mer_part = (
+        0.5 * math.log((1.0 + sin_lat) / (1.0 - sin_lat))
+        - 0.5 * e * math.log((1.0 + e * sin_lat) / (1.0 - e * sin_lat))
+    )
+    py = (1.0 - mer_part / math.pi) * 0.5 * n * tile_size
+    return px, py
+
+
+def lat_lon_to_tile_yandex(lat: float, lon: float, zoom: int) -> Tuple[int, int]:
+    """Конвертирует координаты в номер тайла проекции Яндекса."""
+    px, py = lat_lon_to_pixel_yandex(lat, lon, zoom, 256)
+    return int(px // 256), int(py // 256)
 
 
 def _get_tile_cache_path(provider: str, zoom: int, x: int, y: int) -> Path:
@@ -134,6 +162,9 @@ class MapModule(OverlayModule):
         self.map_provider = config.get("map_provider", "osm")
         self._tile_cache = {}  # кеш загруженных тайлов в памяти
 
+    def _is_yandex_provider(self) -> bool:
+        return self.map_provider in ("yandex_map", "yandex_sat")
+
     def _get_tile(self, zoom: int, x: int, y: int) -> Optional[Image.Image]:
         """Получает тайл из памяти или скачивает."""
         key = (self.map_provider, zoom, x, y)
@@ -153,9 +184,12 @@ class MapModule(OverlayModule):
         """
         zoom = self.zoom
         tile_size = 256
-
+        is_yandex = self._is_yandex_provider()
         # Центральный тайл
-        cx_tile, cy_tile = lat_lon_to_tile(center_lat, center_lon, zoom)
+        if is_yandex:
+            cx_tile, cy_tile = lat_lon_to_tile_yandex(center_lat, center_lon, zoom)
+        else:
+            cx_tile, cy_tile = lat_lon_to_tile(center_lat, center_lon, zoom)
 
         # Сколько тайлов нужно в каждую сторону
         tiles_x = math.ceil(self.width / tile_size) + 2
@@ -186,7 +220,11 @@ class MapModule(OverlayModule):
                     map_img.paste(tile_copy, (px, py))
 
         # Пиксельные координаты центра
-        center_px, center_py = lat_lon_to_pixel(center_lat, center_lon, zoom, tile_size)
+        if is_yandex:
+            center_px, center_py = lat_lon_to_pixel_yandex(center_lat, center_lon, zoom, tile_size)
+        else:
+            center_px, center_py = lat_lon_to_pixel(center_lat, center_lon, zoom, tile_size)
+        
         origin_px = x_start * tile_size
         origin_py = y_start * tile_size
 
@@ -237,12 +275,19 @@ class MapModule(OverlayModule):
 
         zoom = self.zoom
         tile_size = 256
+        is_yandex = self._is_yandex_provider()
 
         # Смещение для перевода геокоординат в координаты холста
-        center_px_ref, center_py_ref = lat_lon_to_pixel(center_lat, center_lon, zoom, tile_size)
+        if is_yandex:
+            center_px_ref, center_py_ref = lat_lon_to_pixel_yandex(center_lat, center_lon, zoom, tile_size)
+        else:
+            center_px_ref, center_py_ref = lat_lon_to_pixel(center_lat, center_lon, zoom, tile_size)
 
         def geo_to_canvas(lat: float, lon: float) -> Tuple[float, float]:
-            px, py = lat_lon_to_pixel(lat, lon, zoom, tile_size)
+            if is_yandex:
+                px, py = lat_lon_to_pixel_yandex(lat, lon, zoom, tile_size)
+            else:
+                px, py = lat_lon_to_pixel(lat, lon, zoom, tile_size)
             cx_canvas = px - center_px_ref + self.width // 2
             cy_canvas = py - center_py_ref + self.height // 2
             return cx_canvas, cy_canvas
