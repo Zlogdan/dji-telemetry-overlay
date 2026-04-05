@@ -4,9 +4,11 @@
 Общие функции, используемые несколькими модулями.
 """
 
+import functools
 from PIL import ImageFont
 
 
+@functools.lru_cache(maxsize=32)
 def load_font(size: int) -> ImageFont.ImageFont:
     """
     Загружает шрифт заданного размера с автоматическим выбором из доступных.

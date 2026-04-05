@@ -4,6 +4,7 @@
 """
 
 import math
+import logging
 import os
 import hashlib
 from pathlib import Path
@@ -19,11 +20,16 @@ try:
 except ImportError:
     REQUESTS_AVAILABLE = False
 
+logger = logging.getLogger(__name__)
+
 # Кеш-директория для тайлов
 TILE_CACHE_DIR = Path.home() / ".cache" / "telemetry-overlay" / "tiles"
 
 # Заголовки запроса тайлов
 TILE_HEADERS = {"User-Agent": "DJI-Telemetry-Overlay/1.0"}
+
+# Максимальное количество тайлов в памяти
+MAX_TILE_CACHE_SIZE = 256
 
 # Провайдеры карт: шаблоны URL тайлов (параметры {z}, {x}, {y})
 MAP_PROVIDERS = {
@@ -80,7 +86,7 @@ def _download_tile(provider: str, zoom: int, x: int, y: int) -> Optional[Image.I
         try:
             return Image.open(cache_path).convert("RGBA")
         except Exception:
-            pass
+            logger.debug("Не удалось открыть кешированный тайл: %s", cache_path, exc_info=True)
 
     if not REQUESTS_AVAILABLE:
         return None
@@ -96,8 +102,8 @@ def _download_tile(provider: str, zoom: int, x: int, y: int) -> Optional[Image.I
                 f.write(response.content)
             import io
             return Image.open(io.BytesIO(response.content)).convert("RGBA")
-    except Exception:
-        pass
+    except requests.RequestException as exc:
+        logger.debug("Ошибка загрузки тайла %s: %s", url, exc)
 
     return None
 
@@ -130,6 +136,9 @@ class MapModule(OverlayModule):
         """Получает тайл из памяти или скачивает."""
         key = (self.map_provider, zoom, x, y)
         if key not in self._tile_cache:
+            # Ограничиваем размер кеша: удаляем первый элемент при переполнении
+            if len(self._tile_cache) >= MAX_TILE_CACHE_SIZE:
+                self._tile_cache.pop(next(iter(self._tile_cache)))
             self._tile_cache[key] = _download_tile(self.map_provider, zoom, x, y)
         return self._tile_cache[key]
 

@@ -6,6 +6,7 @@
 
 import subprocess
 import io
+import logging
 import os
 from pathlib import Path
 from typing import List, Optional, Callable
@@ -15,6 +16,8 @@ from PIL import Image
 from core.parser import TelemetryPoint
 from core.interpolator import interpolate_to_fps, smooth_points
 from modules import create_module
+
+logger = logging.getLogger(__name__)
 
 # Псевдоним для удобства использования в методах класса
 TP = TelemetryPoint
@@ -39,7 +42,7 @@ class RenderEngine:
             module = create_module(mod_config)
             if module is not None:
                 self.modules.append(module)
-        print(f"Загружено модулей: {len(self.modules)}")
+        logger.info("Загружено модулей: %d", len(self.modules))
 
     def render_frame(
         self,
@@ -68,7 +71,7 @@ class RenderEngine:
                 x, y = module.get_position()
                 canvas.paste(overlay, (x, y), overlay)
             except Exception as e:
-                print(f"Ошибка рендеринга модуля {type(module).__name__}: {e}")
+                logger.error("Ошибка рендеринга модуля %s: %s", type(module).__name__, e, exc_info=True)
 
         return canvas
 
@@ -106,12 +109,12 @@ class RenderEngine:
                 raw_points.append(p)
 
         # Интерполяция до FPS
-        print(f"Интерполяция {len(raw_points)} точек до {fps} кадров/с...")
+        logger.info("Интерполяция %d точек до %s кадров/с...", len(raw_points), fps)
         frame_points = interpolate_to_fps(raw_points, fps, duration)
         frame_points = smooth_points(frame_points, window=5)
 
         total_frames = len(frame_points)
-        print(f"Всего кадров для рендеринга: {total_frames}")
+        logger.info("Всего кадров для рендеринга: %d", total_frames)
 
         # Создаём директорию для выходного файла
         output_path = str(output_path)
@@ -147,7 +150,7 @@ class RenderEngine:
                 output_path
             ]
 
-        print(f"Запуск FFmpeg: {' '.join(ffmpeg_cmd)}")
+        logger.debug("Запуск FFmpeg: %s", " ".join(ffmpeg_cmd))
 
         try:
             proc = subprocess.Popen(
@@ -177,6 +180,11 @@ class RenderEngine:
         except BrokenPipeError:
             stderr = proc.stderr.read().decode("utf-8", errors="ignore")
             raise RuntimeError(f"FFmpeg завершился с ошибкой:\n{stderr}")
+        except Exception:
+            # Гарантируем завершение процесса при любой ошибке рендеринга
+            proc.terminate()
+            proc.wait()
+            raise
 
         # Ждём завершения FFmpeg
         stdout, stderr = proc.communicate()
@@ -184,7 +192,7 @@ class RenderEngine:
             error_msg = stderr.decode("utf-8", errors="ignore")
             raise RuntimeError(f"FFmpeg вернул код {proc.returncode}:\n{error_msg}")
 
-        print(f"Рендеринг завершён: {output_path}")
+        logger.info("Рендеринг завершён: %s", output_path)
 
     def get_preview_frame(self, telemetry: dict, frame_index: int = 0) -> Image.Image:
         """
