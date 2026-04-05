@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
     QGroupBox, QCheckBox, QSpinBox, QDoubleSpinBox,
     QTextEdit, QProgressBar, QStatusBar, QMenuBar,
     QAction, QSplitter, QFrame, QScrollArea,
-    QFormLayout, QMessageBox, QComboBox
+    QFormLayout, QMessageBox, QComboBox, QTabWidget
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
 from PyQt5.QtGui import QFont, QColor, QPalette
@@ -32,16 +32,17 @@ class TelemetryWorker(QObject):
     error = pyqtSignal(str)              # произошла ошибка
     progress = pyqtSignal(str)           # сообщение о прогрессе
 
-    def __init__(self, video_path: str):
+    def __init__(self, video_path: str, perf_config: dict = None):
         super().__init__()
         self.video_path = video_path
+        self.perf_config = perf_config or {}
 
     def run(self):
         """Выполняет извлечение телеметрии."""
         try:
             self.progress.emit("Анализ видеофайла...")
             from core.extractor import extract_telemetry
-            telemetry = extract_telemetry(self.video_path)
+            telemetry = extract_telemetry(self.video_path, perf_config=self.perf_config)
             self.progress.emit(f"Извлечено точек: {len(telemetry.get('points', []))}")
             self.finished.emit(telemetry)
         except Exception as e:
@@ -98,10 +99,16 @@ class MainWindow(QMainWindow):
 
     def _setup_ui(self):
         """Строит основной интерфейс."""
-        central = QWidget()
-        self.setCentralWidget(central)
+        self.tabs = QTabWidget()
+        self.setCentralWidget(self.tabs)
 
-        main_layout = QHBoxLayout(central)
+        self.tabs.addTab(self._build_main_tab(), "Основное")
+        self.tabs.addTab(self._build_settings_tab(), "Настройки")
+
+    def _build_main_tab(self) -> QWidget:
+        """Вкладка «Основное»: файлы, действия и предпросмотр."""
+        widget = QWidget()
+        main_layout = QHBoxLayout(widget)
         main_layout.setSpacing(8)
 
         splitter = QSplitter(Qt.Horizontal)
@@ -115,21 +122,39 @@ class MainWindow(QMainWindow):
 
         left_layout.addWidget(self._build_files_group())
         left_layout.addWidget(self._build_actions_group())
-        left_layout.addWidget(self._build_modules_group())
-        left_layout.addWidget(self._build_params_group())
         left_layout.addStretch()
 
         # Правая панель результатов
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
         right_layout.setSpacing(6)
-
         right_layout.addWidget(self._build_preview_group())
 
         splitter.addWidget(left_widget)
         splitter.addWidget(right_widget)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
+
+        return widget
+
+    def _build_settings_tab(self) -> QWidget:
+        """Вкладка «Настройки»: модули, параметры отображения, производительность."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setSpacing(10)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        layout.addWidget(self._build_modules_group())
+        layout.addWidget(self._build_params_group())
+        layout.addWidget(self._build_performance_group())
+        layout.addStretch()
+
+        scroll.setWidget(container)
+        return scroll
 
     def _build_files_group(self) -> QGroupBox:
         """Группа выбора файлов."""
@@ -308,6 +333,66 @@ class MainWindow(QMainWindow):
 
         return group
 
+    def _build_performance_group(self) -> QGroupBox:
+        """Группа настроек производительности (актуально для 4K/120fps)."""
+        group = QGroupBox("Производительность (4K / 120fps)")
+        layout = QFormLayout(group)
+        layout.setSpacing(6)
+
+        perf = self.config_manager.config.get("performance", {})
+
+        # Таймаут ffprobe
+        self.ffprobe_timeout_spin = QSpinBox()
+        self.ffprobe_timeout_spin.setRange(10, 600)
+        self.ffprobe_timeout_spin.setValue(int(perf.get("ffprobe_timeout", 30)))
+        self.ffprobe_timeout_spin.setSuffix(" с")
+        self.ffprobe_timeout_spin.setToolTip(
+            "Максимальное время ожидания при анализе видеофайла (ffprobe).\n"
+            "Для файлов 8+ ГБ рекомендуется увеличить до 120–300 с."
+        )
+        self.ffprobe_timeout_spin.valueChanged.connect(
+            lambda v: self._update_perf_config("ffprobe_timeout", v)
+        )
+        layout.addRow("Таймаут ffprobe:", self.ffprobe_timeout_spin)
+
+        # Таймаут ffmpeg
+        self.ffmpeg_timeout_spin = QSpinBox()
+        self.ffmpeg_timeout_spin.setRange(10, 600)
+        self.ffmpeg_timeout_spin.setValue(int(perf.get("ffmpeg_timeout", 60)))
+        self.ffmpeg_timeout_spin.setSuffix(" с")
+        self.ffmpeg_timeout_spin.setToolTip(
+            "Максимальное время ожидания при извлечении потока данных (ffmpeg).\n"
+            "Для длинных видео рекомендуется увеличить до 120–300 с."
+        )
+        self.ffmpeg_timeout_spin.valueChanged.connect(
+            lambda v: self._update_perf_config("ffmpeg_timeout", v)
+        )
+        layout.addRow("Таймаут ffmpeg:", self.ffmpeg_timeout_spin)
+
+        # Уровень сжатия PNG
+        self.png_compress_spin = QSpinBox()
+        self.png_compress_spin.setRange(0, 9)
+        self.png_compress_spin.setValue(int(perf.get("png_compress_level", 1)))
+        self.png_compress_spin.setToolTip(
+            "Уровень сжатия PNG-кадров при рендеринге.\n"
+            "0 — без сжатия (быстрее, больше нагрузка на pipe).\n"
+            "1 — быстрое сжатие (рекомендуется для 4K/120fps).\n"
+            "9 — максимальное сжатие (медленнее)."
+        )
+        self.png_compress_spin.valueChanged.connect(
+            lambda v: self._update_perf_config("png_compress_level", v)
+        )
+        layout.addRow("Сжатие PNG (0–9):", self.png_compress_spin)
+
+        hint = QLabel(
+            "⚠ Для видео 4K/120fps рекомендуется: таймауты 120–300 с, сжатие PNG = 0 или 1."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #aaa; font-size: 11px;")
+        layout.addRow(hint)
+
+        return group
+
     def _build_preview_group(self) -> QGroupBox:
         """Правая панель предпросмотра телеметрии."""
         group = QGroupBox("Предпросмотр телеметрии")
@@ -420,7 +505,10 @@ class MainWindow(QMainWindow):
 
         # Создаём поток
         self._thread = QThread()
-        self._worker = TelemetryWorker(video_path)
+        self._worker = TelemetryWorker(
+            video_path,
+            perf_config=self.config_manager.config.get("performance", {})
+        )
         self._worker.moveToThread(self._thread)
 
         self._thread.started.connect(self._worker.run)
@@ -579,6 +667,12 @@ class MainWindow(QMainWindow):
         for mod in self.config_manager.config.get("modules", []):
             if mod.get("type") == "speedometer":
                 mod["max_speed"] = value
+
+    def _update_perf_config(self, key: str, value):
+        """Обновляет настройку производительности в конфигурации."""
+        if "performance" not in self.config_manager.config:
+            self.config_manager.config["performance"] = {}
+        self.config_manager.config["performance"][key] = value
 
     def _load_config(self):
         """Загружает конфигурацию из файла."""

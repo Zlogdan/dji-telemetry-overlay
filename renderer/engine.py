@@ -152,6 +152,11 @@ class RenderEngine:
 
         logger.debug("Запуск FFmpeg: %s", " ".join(ffmpeg_cmd))
 
+        # Уровень сжатия PNG: 0 = без сжатия (быстро), 9 = максимум (медленно)
+        png_compress_level = int(
+            self.config.get("performance", {}).get("png_compress_level", 1)
+        )
+
         try:
             proc = subprocess.Popen(
                 ffmpeg_cmd,
@@ -170,7 +175,7 @@ class RenderEngine:
                 frame = self.render_frame(i, point, frame_points)
                 # Конвертируем в PNG и пишем в stdin FFmpeg
                 buf = io.BytesIO()
-                frame.save(buf, format="PNG")
+                frame.save(buf, format="PNG", compress_level=png_compress_level)
                 proc.stdin.write(buf.getvalue())
 
                 if progress_callback and (i % 10 == 0 or i == total_frames - 1):

@@ -16,7 +16,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def _run_ffprobe(video_path: str) -> Optional[dict]:
+def _run_ffprobe(video_path: str, timeout: int = 30) -> Optional[dict]:
     """Запускает ffprobe для получения информации о потоках видео."""
     try:
         cmd = [
@@ -27,7 +27,7 @@ def _run_ffprobe(video_path: str) -> Optional[dict]:
             "-show_format",
             str(video_path)
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         if result.returncode != 0:
             return None
         return json.loads(result.stdout)
@@ -42,7 +42,7 @@ def _run_ffprobe(video_path: str) -> Optional[dict]:
         return None
 
 
-def _extract_data_stream(video_path: str) -> bytes:
+def _extract_data_stream(video_path: str, timeout: int = 60) -> bytes:
     """Извлекает поток данных (телеметрию) из видеофайла."""
     try:
         cmd = [
@@ -53,7 +53,7 @@ def _extract_data_stream(video_path: str) -> bytes:
             "-f", "data",
             "pipe:1"
         ]
-        result = subprocess.run(cmd, capture_output=True, timeout=60)
+        result = subprocess.run(cmd, capture_output=True, timeout=timeout)
         if result.returncode == 0:
             return result.stdout
         return b""
@@ -164,16 +164,22 @@ def generate_demo_telemetry(duration: float = 60.0, fps: float = 30.0) -> dict:
     }
 
 
-def extract_telemetry(video_path: str) -> dict:
+def extract_telemetry(video_path: str, perf_config: dict = None) -> dict:
     """
     Извлекает телеметрию из видеофайла DJI.
 
     Аргументы:
         video_path: путь к видеофайлу MP4/MOV
+        perf_config: словарь с настройками производительности
+                     (ffprobe_timeout, ffmpeg_timeout)
 
     Возвращает:
         Словарь с ключами fps, duration, points
     """
+    perf = perf_config or {}
+    ffprobe_timeout = int(perf.get("ffprobe_timeout", 30))
+    ffmpeg_timeout = int(perf.get("ffmpeg_timeout", 60))
+
     video_path = str(video_path)
 
     if not os.path.exists(video_path):
@@ -181,7 +187,7 @@ def extract_telemetry(video_path: str) -> dict:
         return generate_demo_telemetry()
 
     # Получаем информацию о видео
-    probe_data = _run_ffprobe(video_path)
+    probe_data = _run_ffprobe(video_path, timeout=ffprobe_timeout)
     if probe_data is None:
         logger.warning("Не удалось получить информацию о видео. Используется демонстрационная телеметрия.")
         return generate_demo_telemetry()
@@ -195,7 +201,7 @@ def extract_telemetry(video_path: str) -> dict:
     logger.info("Видео: FPS=%s, длительность=%.1fс", fps, duration)
 
     # Пробуем извлечь поток данных
-    raw_data = _extract_data_stream(video_path)
+    raw_data = _extract_data_stream(video_path, timeout=ffmpeg_timeout)
     points = []
 
     if raw_data:
@@ -204,7 +210,7 @@ def extract_telemetry(video_path: str) -> dict:
 
     # Если NMEA не найдено, пробуем метаданные MP4
     if not points:
-        points = _try_extract_mp4_metadata(video_path, probe_data)
+        points = _try_extract_mp4_metadata(video_path, probe_data, timeout=ffmpeg_timeout)
 
     # Если всё равно пусто — используем демо
     if not points:
@@ -238,7 +244,7 @@ def extract_telemetry(video_path: str) -> dict:
     }
 
 
-def _try_extract_mp4_metadata(video_path: str, probe_data: dict) -> list:
+def _try_extract_mp4_metadata(video_path: str, probe_data: dict, timeout: int = 30) -> list:
     """
     Пробует извлечь GPS из метаданных MP4/MOV.
     Для DJI видео данные могут быть в потоке с codec_tag 'gpmd' или 'tmcd'.
@@ -263,7 +269,7 @@ def _try_extract_mp4_metadata(video_path: str, probe_data: dict) -> list:
                     "-f", "data",
                     "pipe:1"
                 ]
-                result = subprocess.run(cmd, capture_output=True, timeout=30)
+                result = subprocess.run(cmd, capture_output=True, timeout=timeout)
                 if result.returncode == 0 and result.stdout:
                     # Пробуем разобрать как NMEA
                     extracted = _parse_nmea_from_bytes(result.stdout)
