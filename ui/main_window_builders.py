@@ -395,6 +395,37 @@ def build_performance_group(window) -> QGroupBox:
 
     perf = window.config_manager.config.get("performance", {})
 
+    # Аппаратное ускорение
+    window.hw_accel_combo = QComboBox()
+    window.hw_accel_combo.addItem("Авто (определить автоматически)", "auto")
+    window.hw_accel_combo.addItem("Только CPU", "none")
+    hw_accel_val = str(perf.get("hw_accel", "auto")).lower()
+    idx = window.hw_accel_combo.findData(hw_accel_val)
+    window.hw_accel_combo.setCurrentIndex(idx if idx >= 0 else 0)
+    window.hw_accel_combo.setToolTip(
+        "Аппаратное ускорение кодирования FFmpeg.\n"
+        "Авто — использует VideoToolbox (macOS) если доступен.\n"
+        "Только CPU — всегда использует программный кодировщик."
+    )
+    window.hw_accel_combo.currentIndexChanged.connect(
+        lambda i: window._update_perf_config("hw_accel", window.hw_accel_combo.itemData(i))
+    )
+    layout.addRow("Аппаратное ускорение:", window.hw_accel_combo)
+
+    # Потоки рендеринга
+    window.render_workers_spin = QSpinBox()
+    window.render_workers_spin.setRange(0, 32)
+    window.render_workers_spin.setValue(int(perf.get("render_workers", 0)))
+    window.render_workers_spin.setToolTip(
+        "Количество потоков для параллельного рендеринга кадров.\n"
+        "0 — автоматически (по числу ядер CPU).\n"
+        "1 — однопоточный режим (для отладки)."
+    )
+    window.render_workers_spin.valueChanged.connect(
+        lambda v: window._update_perf_config("render_workers", v)
+    )
+    layout.addRow("Потоки рендеринга (0=авто):", window.render_workers_spin)
+
     # Таймаут ffprobe
     window.ffprobe_timeout_spin = QSpinBox()
     window.ffprobe_timeout_spin.setRange(10, 600)
@@ -423,15 +454,16 @@ def build_performance_group(window) -> QGroupBox:
     )
     layout.addRow("Таймаут ffmpeg:", window.ffmpeg_timeout_spin)
 
-    # Уровень сжатия PNG
+    # Уровень сжатия PNG (для PNG sequence)
     window.png_compress_spin = QSpinBox()
     window.png_compress_spin.setRange(0, 9)
     window.png_compress_spin.setValue(int(perf.get("png_compress_level", 1)))
     window.png_compress_spin.setToolTip(
-        "Уровень сжатия PNG-кадров при рендеринге.\n"
-        "0 — без сжатия (быстрее, больше нагрузка на pipe).\n"
-        "1 — быстрое сжатие (рекомендуется для 4K/120fps).\n"
-        "9 — максимальное сжатие (медленнее)."
+        "Уровень сжатия PNG при экспорте в PNG sequence.\n"
+        "0 — без сжатия (быстрее, больше размер).\n"
+        "1 — быстрое сжатие (рекомендуется).\n"
+        "9 — максимальное сжатие (медленнее).\n"
+        "Не используется при рендере в видео (MOV/WebM)."
     )
     window.png_compress_spin.valueChanged.connect(
         lambda v: window._update_perf_config("png_compress_level", v)
@@ -466,7 +498,7 @@ def build_performance_group(window) -> QGroupBox:
     layout.addRow("VP9 cpu-used (0-8):", window.vp9_cpu_spin)
 
     hint = QLabel(
-        "⚠ Для видео 4K/120fps рекомендуется: таймауты 120–300 с, сжатие PNG = 0 или 1."
+        "⚠ Для видео 4K/120fps рекомендуется: таймауты 120–300 с, потоки рендеринга = 0 (авто)."
     )
     hint.setWordWrap(True)
     hint.setStyleSheet("color: #aaa; font-size: 11px;")

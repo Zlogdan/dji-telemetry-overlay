@@ -5,9 +5,9 @@
 """
 
 import subprocess
-import io
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional, Callable
 
@@ -21,6 +21,31 @@ logger = logging.getLogger(__name__)
 
 # Псевдоним для удобства использования в методах класса
 TP = TelemetryPoint
+
+
+def detect_hw_encoders() -> list:
+    """Обнаруживает доступные аппаратные видеокодировщики FFmpeg.
+
+    Возвращает:
+        Список доступных HW-кодировщиков из числа известных.
+    """
+    known_hw = [
+        "prores_videotoolbox",
+        "h264_videotoolbox", "hevc_videotoolbox",
+        "h264_nvenc", "hevc_nvenc",
+        "h264_qsv", "hevc_qsv",
+        "h264_amf", "hevc_amf",
+    ]
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True, text=True, timeout=10
+        )
+        output = result.stdout + result.stderr
+        return [enc for enc in known_hw if enc in output]
+    except Exception as exc:
+        logger.debug("Не удалось определить аппаратные кодировщики: %s", exc)
+        return []
 
 
 class RenderEngine:
@@ -140,6 +165,14 @@ class RenderEngine:
         vp9_crf = max(0, min(63, int(perf_cfg.get("vp9_crf", 34))))
         vp9_cpu_used = max(0, min(8, int(perf_cfg.get("vp9_cpu_used", 2))))
 
+        # Количество потоков рендеринга (0 = автоматически по числу ядер)
+        configured_workers = int(perf_cfg.get("render_workers", 0))
+        num_workers = configured_workers if configured_workers > 0 else max(1, os.cpu_count() or 4)
+        logger.info("Потоков рендеринга: %d", num_workers)
+
+        # Аппаратное ускорение
+        hw_accel = str(perf_cfg.get("hw_accel", "auto")).lower()
+
         # Определяем формат кодека по настройке или расширению
         configured_format = str(export_cfg.get("output_format", "")).strip().lower()
         ext = Path(output_path).suffix.lower()
@@ -148,26 +181,45 @@ class RenderEngine:
             target_format = "mov"
         output_path = str(Path(output_path).with_suffix(f".{target_format}"))
 
+        # Общие аргументы входного потока (rawvideo — без накладных расходов PNG)
+        input_args = [
+            "ffmpeg", "-y",
+            "-f", "rawvideo",
+            "-pix_fmt", "rgba",
+            "-s", f"{self.width}x{self.height}",
+            "-r", str(fps),
+            "-i", "pipe:0",
+        ]
+
         if target_format == "mov":
-            ffmpeg_cmd = [
-                "ffmpeg", "-y",
-                "-f", "image2pipe",
-                "-vcodec", "png",
-                "-r", str(fps),
-                "-i", "pipe:0",
-                "-vcodec", "prores_ks",
-                "-profile:v", "4444",
-                "-qscale:v", str(prores_qscale),
-                "-pix_fmt", "yuva444p10le",
-                output_path
-            ]
+            # Выбираем кодировщик с учётом аппаратного ускорения
+            encoder = "prores_ks"
+            if hw_accel == "auto":
+                available = detect_hw_encoders()
+                if "prores_videotoolbox" in available:
+                    encoder = "prores_videotoolbox"
+                    logger.info("Используется аппаратный кодировщик: %s", encoder)
+
+            if encoder == "prores_videotoolbox":
+                ffmpeg_cmd = input_args + [
+                    "-vcodec", "prores_videotoolbox",
+                    "-profile:v", "4444",
+                    "-pix_fmt", "yuva444p10le",
+                    output_path,
+                ]
+            else:
+                ffmpeg_cmd = input_args + [
+                    "-vcodec", "prores_ks",
+                    "-profile:v", "4444",
+                    "-qscale:v", str(prores_qscale),
+                    "-pix_fmt", "yuva444p10le",
+                    output_path,
+                ]
         else:
-            ffmpeg_cmd = [
-                "ffmpeg", "-y",
-                "-f", "image2pipe",
-                "-vcodec", "png",
-                "-r", str(fps),
-                "-i", "pipe:0",
+            # VP9 WebM: аппаратных кодировщиков с поддержкой alpha нет —
+            # используем CPU, но добавляем многопоточность FFmpeg
+            ffmpeg_threads = min(num_workers, 8)
+            ffmpeg_cmd = input_args + [
                 "-vcodec", "libvpx-vp9",
                 "-pix_fmt", "yuva420p",
                 "-b:v", "0",
@@ -176,16 +228,12 @@ class RenderEngine:
                 "-cpu-used", str(vp9_cpu_used),
                 "-row-mt", "1",
                 "-tile-columns", "2",
+                "-threads", str(ffmpeg_threads),
                 "-auto-alt-ref", "0",
-                output_path
+                output_path,
             ]
 
         logger.debug("Запуск FFmpeg: %s", " ".join(ffmpeg_cmd))
-
-        # Уровень сжатия PNG: 0 = без сжатия (быстро), 9 = максимум (медленно)
-        png_compress_level = int(
-            self.config.get("performance", {}).get("png_compress_level", 1)
-        )
 
         try:
             proc = subprocess.Popen(
@@ -199,17 +247,24 @@ class RenderEngine:
                 "FFmpeg не найден. Установите FFmpeg и добавьте в PATH."
             )
 
-        # Рендерим и передаём кадры
+        # Рендерим и передаём кадры в FFmpeg.
+        # Кадры рендерятся параллельно блоками (chunk), затем стримятся в порядке.
+        # Размер блока ограничивает пиковое потребление памяти.
+        chunk_size = max(1, num_workers * 4)
         try:
-            for i, point in enumerate(frame_points):
-                frame = self.render_frame(i, point, frame_points)
-                # Конвертируем в PNG и пишем в stdin FFmpeg
-                buf = io.BytesIO()
-                frame.save(buf, format="PNG", compress_level=png_compress_level)
-                proc.stdin.write(buf.getvalue())
-
-                if progress_callback and (i % 10 == 0 or i == total_frames - 1):
-                    progress_callback(i + 1, total_frames)
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                for chunk_start in range(0, total_frames, chunk_size):
+                    chunk_end = min(chunk_start + chunk_size, total_frames)
+                    # executor.map гарантирует порядок, соответствующий входным индексам
+                    frame_bytes_iter = executor.map(
+                        lambda i: self.render_frame(i, frame_points[i], frame_points).tobytes(),
+                        range(chunk_start, chunk_end),
+                    )
+                    for local_j, frame_bytes in enumerate(frame_bytes_iter):
+                        global_i = chunk_start + local_j
+                        proc.stdin.write(frame_bytes)
+                        if progress_callback and (global_i % 10 == 0 or global_i == total_frames - 1):
+                            progress_callback(global_i + 1, total_frames)
 
             proc.stdin.close()
         except BrokenPipeError:
@@ -266,15 +321,24 @@ class RenderEngine:
         output_root.mkdir(parents=True, exist_ok=True)
 
         total_frames = len(frame_points)
-        png_compress_level = int(self.config.get("performance", {}).get("png_compress_level", 1))
+        perf_cfg = self.config.get("performance", {})
+        png_compress_level = int(perf_cfg.get("png_compress_level", 1))
+        configured_workers = int(perf_cfg.get("render_workers", 0))
+        num_workers = configured_workers if configured_workers > 0 else max(1, os.cpu_count() or 4)
 
-        for i, point in enumerate(frame_points):
-            frame = self.render_frame(i, point, frame_points)
+        def _render_and_save(i: int):
+            frame = self.render_frame(i, frame_points[i], frame_points)
             frame_path = output_root / f"overlay_{i + 1:06d}.png"
             frame.save(frame_path, format="PNG", compress_level=png_compress_level)
+            return i
 
-            if progress_callback and (i % 10 == 0 or i == total_frames - 1):
-                progress_callback(i + 1, total_frames)
+        chunk_size = max(1, num_workers * 4)
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            for chunk_start in range(0, total_frames, chunk_size):
+                chunk_end = min(chunk_start + chunk_size, total_frames)
+                for i in executor.map(_render_and_save, range(chunk_start, chunk_end)):
+                    if progress_callback and (i % 10 == 0 or i == total_frames - 1):
+                        progress_callback(i + 1, total_frames)
 
         logger.info("PNG sequence сохранена: %s (%d кадров)", output_root, total_frames)
 

@@ -4,6 +4,7 @@
 """
 
 import math
+import threading
 from PIL import Image, ImageDraw
 from modules.base import OverlayModule
 from modules.utils import load_font
@@ -13,71 +14,51 @@ from core.parser import TelemetryPoint
 class SpeedometerModule(OverlayModule):
     """Круговой спидометр с дугой и цифровым отображением скорости."""
 
+    # Параметры дуги: от 210° до 330° (300° диапазон)
+    _START_ANGLE = 210
+    _ARC_RANGE = 300
+
     def __init__(self, config: dict):
         super().__init__(config)
         self.max_speed = config.get("max_speed", 150)  # максимум в км/ч
         self.unit = config.get("unit", "kmh")  # kmh или ms
         self.unit_label = "км/ч" if self.unit == "kmh" else "м/с"
+        # Кэш статического фона (не зависит от скорости)
+        self._bg_cache: Image.Image | None = None
+        self._bg_cache_key: tuple | None = None
+        self._bg_lock = threading.Lock()
 
-    def render(self, point: TelemetryPoint, all_points: list) -> Image.Image:
-        """Рендерит спидометр для заданной точки телеметрии."""
+    def _get_static_background(self, cx: int, cy: int, r: int, max_val: float) -> Image.Image:
+        """Возвращает кэшированный статический фон (круг, шкала, метки)."""
+        cache_key = (cx, cy, r, max_val, self.unit_label)
+        with self._bg_lock:
+            if self._bg_cache_key != cache_key:
+                self._bg_cache = self._render_static_background(cx, cy, r, max_val)
+                self._bg_cache_key = cache_key
+            return self._bg_cache.copy()
+
+    def _render_static_background(self, cx: int, cy: int, r: int, max_val: float) -> Image.Image:
+        """Рисует статические элементы: фоновый круг, шкалу, метки единиц."""
         img = self.create_canvas()
         draw = ImageDraw.Draw(img)
 
-        cx = self.width // 2
-        cy = self.height // 2
-        r = min(cx, cy) - 10  # внешний радиус
-
-        # Конвертируем скорость
-        if self.unit == "kmh":
-            speed_value = point.speed * 3.6  # м/с → км/ч
-            max_val = self.max_speed
-        else:
-            speed_value = point.speed
-            max_val = self.max_speed / 3.6
-
-        speed_value = max(0.0, min(speed_value, max_val))
-
-        # Рисуем тёмный фон круга
+        # Тёмный фон круга
         draw.ellipse(
             [cx - r, cy - r, cx + r, cy + r],
             fill=(20, 20, 20, 200)
         )
 
-        # Параметры дуги: от 210° до 330° (300° диапазон)
-        start_angle = 210
-        end_angle = 330
-        arc_range = 300  # градусов
+        start_angle = self._START_ANGLE
+        arc_range = self._ARC_RANGE
 
         # Внешняя граница
         draw.arc(
             [cx - r + 5, cy - r + 5, cx + r - 5, cy + r - 5],
             start=start_angle,
-            end=end_angle,
+            end=start_angle + arc_range,
             fill=(60, 60, 60, 255),
             width=8
         )
-
-        # Заполненная дуга скорости
-        speed_ratio = speed_value / max_val if max_val > 0 else 0
-        fill_angle = start_angle + arc_range * speed_ratio
-
-        # Цвет дуги зависит от скорости
-        if speed_ratio < 0.5:
-            arc_color = (0, 200, 100, 255)
-        elif speed_ratio < 0.8:
-            arc_color = (255, 165, 0, 255)
-        else:
-            arc_color = (220, 50, 50, 255)
-
-        if speed_ratio > 0.01:
-            draw.arc(
-                [cx - r + 5, cy - r + 5, cx + r - 5, cy + r - 5],
-                start=start_angle,
-                end=fill_angle,
-                fill=arc_color,
-                width=8
-            )
 
         # Деления шкалы
         num_ticks = 10
@@ -108,7 +89,62 @@ class SpeedometerModule(OverlayModule):
                     anchor="mm"
                 )
 
-        # Стрелка-указатель
+        # Единица измерения (статична, её рисуем здесь)
+        font_unit = load_font(max(10, self.width // 15))
+        draw.text(
+            (cx, cy + 20),
+            self.unit_label,
+            font=font_unit,
+            fill=(180, 180, 180, 255),
+            anchor="mm"
+        )
+
+        return img
+
+    def render(self, point: TelemetryPoint, all_points: list) -> Image.Image:
+        """Рендерит спидометр для заданной точки телеметрии."""
+        cx = self.width // 2
+        cy = self.height // 2
+        r = min(cx, cy) - 10  # внешний радиус
+
+        # Конвертируем скорость
+        if self.unit == "kmh":
+            speed_value = point.speed * 3.6  # м/с → км/ч
+            max_val = self.max_speed
+        else:
+            speed_value = point.speed
+            max_val = self.max_speed / 3.6
+
+        speed_value = max(0.0, min(speed_value, max_val))
+
+        # Берём статический фон из кэша
+        img = self._get_static_background(cx, cy, r, max_val)
+        draw = ImageDraw.Draw(img)
+
+        start_angle = self._START_ANGLE
+        arc_range = self._ARC_RANGE
+
+        # Заполненная дуга скорости (динамическая)
+        speed_ratio = speed_value / max_val if max_val > 0 else 0
+        fill_angle = start_angle + arc_range * speed_ratio
+
+        if speed_ratio < 0.5:
+            arc_color = (0, 200, 100, 255)
+        elif speed_ratio < 0.8:
+            arc_color = (255, 165, 0, 255)
+        else:
+            arc_color = (220, 50, 50, 255)
+
+        if speed_ratio > 0.01:
+            draw.arc(
+                [cx - r + 5, cy - r + 5, cx + r - 5, cy + r - 5],
+                start=start_angle,
+                end=fill_angle,
+                fill=arc_color,
+                width=8
+            )
+
+        # Стрелка-указатель (динамическая)
         needle_angle = math.radians(start_angle + arc_range * speed_ratio)
         needle_len = r - 30
         nx = cx + needle_len * math.cos(needle_angle)
@@ -122,7 +158,7 @@ class SpeedometerModule(OverlayModule):
             fill=(200, 200, 200, 255)
         )
 
-        # Значение скорости
+        # Значение скорости (динамическое)
         font_big = load_font(max(20, self.width // 7))
         speed_text = f"{speed_value:.0f}"
         draw.text(
@@ -130,16 +166,6 @@ class SpeedometerModule(OverlayModule):
             speed_text,
             font=font_big,
             fill=(255, 255, 255, 255),
-            anchor="mm"
-        )
-
-        # Единица измерения
-        font_unit = load_font(max(10, self.width // 15))
-        draw.text(
-            (cx, cy + 20),
-            self.unit_label,
-            font=font_unit,
-            fill=(180, 180, 180, 255),
             anchor="mm"
         )
 

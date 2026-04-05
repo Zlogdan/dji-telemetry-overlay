@@ -150,6 +150,8 @@ class MainWindow(QMainWindow):
         self.prores_qscale_spin.blockSignals(True)
         self.vp9_crf_spin.blockSignals(True)
         self.vp9_cpu_spin.blockSignals(True)
+        self.hw_accel_combo.blockSignals(True)
+        self.render_workers_spin.blockSignals(True)
 
         self.ffprobe_timeout_spin.setValue(int(perf.get("ffprobe_timeout", 30)))
         self.ffmpeg_timeout_spin.setValue(int(perf.get("ffmpeg_timeout", 60)))
@@ -157,6 +159,10 @@ class MainWindow(QMainWindow):
         self.prores_qscale_spin.setValue(int(perf.get("prores_qscale", 11)))
         self.vp9_crf_spin.setValue(int(perf.get("vp9_crf", 34)))
         self.vp9_cpu_spin.setValue(int(perf.get("vp9_cpu_used", 2)))
+        hw_accel_val = str(perf.get("hw_accel", "auto")).lower()
+        hw_idx = self.hw_accel_combo.findData(hw_accel_val)
+        self.hw_accel_combo.setCurrentIndex(hw_idx if hw_idx >= 0 else 0)
+        self.render_workers_spin.setValue(int(perf.get("render_workers", 0)))
 
         self.ffprobe_timeout_spin.blockSignals(False)
         self.ffmpeg_timeout_spin.blockSignals(False)
@@ -164,6 +170,8 @@ class MainWindow(QMainWindow):
         self.prores_qscale_spin.blockSignals(False)
         self.vp9_crf_spin.blockSignals(False)
         self.vp9_cpu_spin.blockSignals(False)
+        self.hw_accel_combo.blockSignals(False)
+        self.render_workers_spin.blockSignals(False)
 
         self.export_mode_combo.blockSignals(True)
         self.output_format_combo.blockSignals(True)
