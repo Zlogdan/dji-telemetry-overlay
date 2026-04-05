@@ -1,0 +1,53 @@
+{
+  "width": 1920,
+  "height": 1080,
+  "modules": [
+    {
+      "type": "speedometer",
+      "x": 100,
+      "y": 820,
+      "width": 200,
+      "height": 200,
+      "max_speed": 150,
+      "unit": "kmh",
+      "enabled": true
+    },
+    {
+      "type": "map",
+      "x": 1580,
+      "y": 50,
+      "width": 300,
+      "height": 300,
+      "zoom": 14,
+      "enabled": true
+    },
+    {
+      "type": "text",
+      "x": 50,
+      "y": 50,
+      "field": "speed",
+      "label": "Скорость",
+      "unit": "км/ч",
+      "font_size": 36,
+      "enabled": true
+    },
+    {
+      "type": "text",
+      "x": 50,
+      "y": 100,
+      "field": "alt",
+      "label": "Высота",
+      "unit": "м",
+      "font_size": 36,
+      "enabled": true
+    },
+    {
+      "type": "heading",
+      "x": 350,
+      "y": 820,
+      "width": 180,
+      "height": 180,
+      "enabled": true
+    }
+  ]
+}
