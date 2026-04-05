@@ -36,10 +36,18 @@ class ConfigManager:
         return {
             "width": 1920,
             "height": 1080,
+            "export": {
+                "mode": "video",
+                "output_format": "mov",
+                "render_fps": 30,
+            },
             "performance": {
                 "ffprobe_timeout": 30,
                 "ffmpeg_timeout": 60,
                 "png_compress_level": 1,
+                "prores_qscale": 11,
+                "vp9_crf": 34,
+                "vp9_cpu_used": 2,
             },
             "extraction": {
                 "pyosmogps_frequency": 1,

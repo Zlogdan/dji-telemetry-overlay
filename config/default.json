@@ -1,6 +1,11 @@
 {
   "width": 1920,
   "height": 1080,
+  "export": {
+    "mode": "video",
+    "output_format": "mov",
+    "render_fps": 30
+  },
   "performance": {
     "ffprobe_timeout": 30,
     "ffmpeg_timeout": 60,

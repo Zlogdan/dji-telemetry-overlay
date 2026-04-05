@@ -26,7 +26,9 @@ logger = logging.getLogger(__name__)
 TILE_CACHE_DIR = Path.home() / ".cache" / "telemetry-overlay" / "tiles"
 
 # Заголовки запроса тайлов
-TILE_HEADERS = {"User-Agent": "DJI-Telemetry-Overlay/1.0"}
+TILE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+}
 
 # Максимальное количество тайлов в памяти
 MAX_TILE_CACHE_SIZE = 256
@@ -35,7 +37,7 @@ MAX_TILE_CACHE_SIZE = 256
 MAP_PROVIDERS = {
     "osm":        "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
     "yandex_map": "https://core-renderer-tiles.maps.yandex.net/tiles?l=map&x={x}&y={y}&z={z}&scale=1&lang=ru_RU",
-    "yandex_sat": "https://core-sat.maps.yandex.net/tiles?l=sat&x={x}&y={y}&z={z}&scale=1&lang=ru_RU",
+    "yandex_sat": "https://core-sat.maps.yandex.net/tiles?l=sat&x={x}&y={y}&z={z}&scale=1",
     "google_sat": "https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
 }
 
