@@ -257,7 +257,7 @@ class RenderEngine:
                     chunk_end = min(chunk_start + chunk_size, total_frames)
                     # executor.map гарантирует порядок, соответствующий входным индексам
                     frame_bytes_iter = executor.map(
-                        lambda i: self.render_frame(i, frame_points[i], frame_points).tobytes(),
+                        lambda idx: self.render_frame(idx, frame_points[idx], frame_points).tobytes(),
                         range(chunk_start, chunk_end),
                     )
                     for local_j, frame_bytes in enumerate(frame_bytes_iter):

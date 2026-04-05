@@ -5,6 +5,7 @@
 
 import math
 import threading
+from typing import Optional
 from PIL import Image, ImageDraw
 from modules.base import OverlayModule
 from modules.utils import load_font
@@ -24,8 +25,8 @@ class SpeedometerModule(OverlayModule):
         self.unit = config.get("unit", "kmh")  # kmh или ms
         self.unit_label = "км/ч" if self.unit == "kmh" else "м/с"
         # Кэш статического фона (не зависит от скорости)
-        self._bg_cache: Image.Image | None = None
-        self._bg_cache_key: tuple | None = None
+        self._bg_cache: Optional[Image.Image] = None
+        self._bg_cache_key: Optional[tuple] = None
         self._bg_lock = threading.Lock()
 
     def _get_static_background(self, cx: int, cy: int, r: int, max_val: float) -> Image.Image:
