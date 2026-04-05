@@ -2,9 +2,12 @@
 """Менеджер конфигурации приложения."""
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Optional, List
+
+logger = logging.getLogger(__name__)
 
 
 class ConfigManager:
@@ -22,10 +25,10 @@ class ConfigManager:
             with open(self.config_path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except FileNotFoundError:
-            print(f"Файл конфигурации не найден: {self.config_path}. Используется конфигурация по умолчанию.")
+            logger.warning("Файл конфигурации не найден: %s. Используется конфигурация по умолчанию.", self.config_path)
             return self._default_config()
         except json.JSONDecodeError as e:
-            print(f"Ошибка разбора конфигурации: {e}. Используется конфигурация по умолчанию.")
+            logger.error("Ошибка разбора конфигурации: %s. Используется конфигурация по умолчанию.", e)
             return self._default_config()
 
     def _default_config(self) -> dict:

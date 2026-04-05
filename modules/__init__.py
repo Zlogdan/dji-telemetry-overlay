@@ -4,10 +4,14 @@
 Предоставляет реестр доступных модулей.
 """
 
+import logging
+
 from modules.speedometer import SpeedometerModule
 from modules.map_view import MapModule
 from modules.text_field import TextFieldModule
 from modules.heading import HeadingModule
+
+logger = logging.getLogger(__name__)
 
 # Реестр модулей по имени типа
 MODULE_REGISTRY = {
@@ -31,6 +35,6 @@ def create_module(config: dict):
     module_type = config.get("type")
     cls = MODULE_REGISTRY.get(module_type)
     if cls is None:
-        print(f"Предупреждение: неизвестный тип модуля '{module_type}'")
+        logger.warning("Неизвестный тип модуля '%s'", module_type)
         return None
     return cls(config)
