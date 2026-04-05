@@ -9,11 +9,22 @@ import json
 import logging
 import os
 import math
-import random
+import tempfile
+import xml.etree.ElementTree as ET
+from datetime import datetime
 from typing import Optional
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def _empty_telemetry(fps: float = 30.0, duration: float = 0.0, source: str = "video") -> dict:
+    """Возвращает пустой контейнер телеметрии без тестовых данных."""
+    return {
+        "fps": float(fps),
+        "duration": float(duration),
+        "points": [],
+        "source": source,
+    }
 
 
 def _run_ffprobe(video_path: str, timeout: int = 30) -> Optional[dict]:
@@ -27,9 +38,23 @@ def _run_ffprobe(video_path: str, timeout: int = 30) -> Optional[dict]:
             "-show_format",
             str(video_path)
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        # ffprobe возвращает UTF-8 JSON; на Windows системная cp1252 может ломать декодирование.
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
         if result.returncode != 0:
+            if result.stderr:
+                logger.debug("ffprobe stderr: %s", result.stderr.strip())
             return None
+        if not result.stdout:
+            logger.error("ffprobe вернул пустой вывод.")
+            return None
+
         return json.loads(result.stdout)
     except FileNotFoundError:
         logger.error("ffprobe не найден. Убедитесь, что FFmpeg установлен и доступен в PATH.")
@@ -37,7 +62,7 @@ def _run_ffprobe(video_path: str, timeout: int = 30) -> Optional[dict]:
     except subprocess.TimeoutExpired:
         logger.error("ffprobe завис при анализе видео.")
         return None
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
         logger.error("Не удалось разобрать вывод ffprobe.")
         return None
 
@@ -63,6 +88,232 @@ def _extract_data_stream(video_path: str, timeout: int = 60) -> bytes:
     except subprocess.TimeoutExpired:
         logger.error("ffmpeg завис при извлечении данных.")
         return b""
+
+
+def _run_pyosmogps_extract(
+    video_path: str,
+    gpx_path: str,
+    frequency: int,
+    method: str,
+    timezone: int,
+    timeout: int,
+) -> bool:
+    """Запускает pyosmogps extract и сохраняет GPX во временный файл."""
+    try:
+        cmd = [
+            "pyosmogps",
+            "extract",
+            video_path,
+            gpx_path,
+            "--frequency", str(frequency),
+            "--resampling-method", str(method),
+            "--timezone-offset", str(timezone),
+        ]
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            if result.stderr:
+                logger.debug("pyosmogps stderr: %s", result.stderr.strip())
+            return False
+        return os.path.exists(gpx_path) and os.path.getsize(gpx_path) > 0
+    except FileNotFoundError:
+        logger.info("pyosmogps не найден в PATH, переключаемся на ffmpeg fallback.")
+        return False
+    except subprocess.TimeoutExpired:
+        logger.warning("pyosmogps превысил таймаут (%ss), переключаемся на fallback.", timeout)
+        return False
+
+
+def _strip_ns(tag: str) -> str:
+    """Возвращает имя XML-тега без namespace."""
+    if "}" in tag:
+        return tag.rsplit("}", 1)[1]
+    return tag
+
+
+def _parse_iso_time(value: str) -> Optional[datetime]:
+    """Парсит ISO8601-время из GPX."""
+    if not value:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Вычисляет расстояние между двумя GPS-точками в метрах."""
+    r = 6371000.0
+    p1 = math.radians(lat1)
+    p2 = math.radians(lat2)
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2.0) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlon / 2.0) ** 2
+    c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+    return r * c
+
+
+def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Вычисляет истинный курс от первой точки ко второй в градусах."""
+    p1 = math.radians(lat1)
+    p2 = math.radians(lat2)
+    dlon = math.radians(lon2 - lon1)
+
+    y = math.sin(dlon) * math.cos(p2)
+    x = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dlon)
+    brng = math.degrees(math.atan2(y, x))
+    return (brng + 360.0) % 360.0
+
+
+def _parse_gpx_points(gpx_path: str, duration: float = 0.0) -> list:
+    """Разбирает GPX, возвращает список TelemetryPoint."""
+    from core.parser import TelemetryPoint
+
+    points = []
+    try:
+        tree = ET.parse(gpx_path)
+        root = tree.getroot()
+    except (ET.ParseError, OSError):
+        logger.warning("Не удалось разобрать GPX: %s", gpx_path)
+        return points
+
+    for trkpt in root.iter():
+        if _strip_ns(trkpt.tag) != "trkpt":
+            continue
+
+        try:
+            lat = float(trkpt.attrib.get("lat", 0.0))
+            lon = float(trkpt.attrib.get("lon", 0.0))
+        except (TypeError, ValueError):
+            continue
+
+        if lat == 0.0 and lon == 0.0:
+            continue
+
+        alt = 0.0
+        tm = None
+        speed = None
+        heading = None
+
+        for child in trkpt.iter():
+            name = _strip_ns(child.tag).lower()
+            text = (child.text or "").strip()
+            if not text:
+                continue
+            if name == "ele":
+                try:
+                    alt = float(text)
+                except ValueError:
+                    pass
+            elif name == "time":
+                tm = _parse_iso_time(text)
+            elif name in ("speed", "velocity"):
+                try:
+                    speed = float(text)
+                except ValueError:
+                    pass
+            elif name in ("course", "heading", "bearing"):
+                try:
+                    heading = float(text) % 360.0
+                except ValueError:
+                    pass
+
+        point = TelemetryPoint(
+            t=0.0,
+            lat=lat,
+            lon=lon,
+            speed=float(speed) if speed is not None else 0.0,
+            alt=alt,
+            heading=float(heading) if heading is not None else 0.0,
+        )
+        points.append((point, tm, speed is not None, heading is not None))
+
+    if not points:
+        return []
+
+    # Привязываем время относительно первой точки, если временные метки есть.
+    first_ts = next((ts for _, ts, _, _ in points if ts is not None), None)
+    if first_ts is not None:
+        for idx, (point, ts, _, _) in enumerate(points):
+            if ts is None:
+                point.t = float(idx)
+            else:
+                point.t = max(0.0, (ts - first_ts).total_seconds())
+    elif len(points) > 1 and duration > 0:
+        for idx, (point, _, _, _) in enumerate(points):
+            point.t = duration * idx / (len(points) - 1)
+    else:
+        for idx, (point, _, _, _) in enumerate(points):
+            point.t = float(idx)
+
+    # Заполняем скорость/курс по геометрии, если их нет в GPX.
+    for i in range(1, len(points)):
+        curr, _, has_speed, has_heading = points[i]
+        prev, _, _, _ = points[i - 1]
+        dt = max(1e-6, curr.t - prev.t)
+        dist = _haversine_meters(prev.lat, prev.lon, curr.lat, curr.lon)
+        if not has_speed and curr.speed <= 0.0:
+            curr.speed = dist / dt
+        if not has_heading:
+            curr.heading = _bearing_deg(prev.lat, prev.lon, curr.lat, curr.lon)
+
+    return [p[0] for p in points]
+
+
+def _try_extract_with_pyosmogps(video_path: str, duration: float, perf: dict, extract_cfg: dict) -> list:
+    """Пробует извлечь телеметрию через pyosmogps и вернуть точки."""
+    frequency = int(extract_cfg.get("pyosmogps_frequency", extract_cfg.get("frequency", 1)))
+    method = str(extract_cfg.get("pyosmogps_resampling_method", extract_cfg.get("method", "lpf")))
+    timezone = int(extract_cfg.get("pyosmogps_timezone_offset", extract_cfg.get("timezone", 3)))
+    timeout = int(
+        perf.get(
+            "pyosmogps_timeout",
+            max(int(perf.get("ffmpeg_timeout", 60)), 60)
+        )
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".gpx", delete=False) as temp_file:
+        gpx_path = temp_file.name
+
+    try:
+        ok = _run_pyosmogps_extract(
+            video_path=video_path,
+            gpx_path=gpx_path,
+            frequency=frequency,
+            method=method,
+            timezone=timezone,
+            timeout=timeout,
+        )
+        if not ok:
+            return []
+
+        points = _parse_gpx_points(gpx_path, duration=duration)
+        if points:
+            logger.info(
+                "Телеметрия извлечена через pyosmogps: %d точек (freq=%sHz, method=%s, tz=%s)",
+                len(points),
+                frequency,
+                method,
+                timezone,
+            )
+        return points
+    finally:
+        try:
+            if os.path.exists(gpx_path):
+                os.remove(gpx_path)
+        except OSError:
+            pass
 
 
 def _parse_nmea_from_bytes(data: bytes) -> list:
@@ -117,54 +368,7 @@ def _get_video_info(probe_data: dict) -> tuple:
     return fps, duration
 
 
-def generate_demo_telemetry(duration: float = 60.0, fps: float = 30.0) -> dict:
-    """
-    Генерирует демонстрационную телеметрию для тестирования без реального видео.
-    Создаёт круговой маршрут вокруг центральной точки.
-    """
-    # Центральная точка демо-маршрута (Москва, Россия)
-    center_lat = 55.7558
-    center_lon = 37.6173
-    radius_deg = 0.005  # примерно 500 метров
-
-    points = []
-    num_points = int(duration)  # одна точка в секунду
-
-    for i in range(num_points):
-        t = float(i)
-        angle = (2 * math.pi * i / num_points)
-
-        lat = center_lat + radius_deg * math.sin(angle)
-        lon = center_lon + radius_deg * math.cos(angle)
-
-        # Скорость: синусоидальная от 10 до 40 км/ч → м/с
-        speed_kmh = 25 + 15 * math.sin(angle * 2)
-        speed_ms = speed_kmh / 3.6
-
-        # Высота: небольшие изменения
-        alt = 100.0 + 10 * math.sin(angle * 3)
-
-        # Курс: по кругу
-        heading = (math.degrees(angle) + 90) % 360
-
-        points.append({
-            "t": t,
-            "lat": lat,
-            "lon": lon,
-            "speed": speed_ms,
-            "alt": alt,
-            "heading": heading
-        })
-
-    return {
-        "fps": fps,
-        "duration": duration,
-        "points": points,
-        "source": "demo"
-    }
-
-
-def extract_telemetry(video_path: str, perf_config: dict = None) -> dict:
+def extract_telemetry(video_path: str, perf_config: dict = None, extract_config: dict = None) -> dict:
     """
     Извлекает телеметрию из видеофайла DJI.
 
@@ -172,11 +376,15 @@ def extract_telemetry(video_path: str, perf_config: dict = None) -> dict:
         video_path: путь к видеофайлу MP4/MOV
         perf_config: словарь с настройками производительности
                      (ffprobe_timeout, ffmpeg_timeout)
+        extract_config: словарь с настройками извлечения
+                (pyosmogps_frequency, pyosmogps_resampling_method,
+                 pyosmogps_timezone_offset)
 
     Возвращает:
         Словарь с ключами fps, duration, points
     """
     perf = perf_config or {}
+    extract_cfg = extract_config or {}
     ffprobe_timeout = int(perf.get("ffprobe_timeout", 30))
     ffmpeg_timeout = int(perf.get("ffmpeg_timeout", 60))
 
@@ -184,25 +392,32 @@ def extract_telemetry(video_path: str, perf_config: dict = None) -> dict:
 
     if not os.path.exists(video_path):
         logger.error("Файл не найден: %s", video_path)
-        return generate_demo_telemetry()
+        return _empty_telemetry(source="missing")
 
     # Получаем информацию о видео
     probe_data = _run_ffprobe(video_path, timeout=ffprobe_timeout)
     if probe_data is None:
-        logger.warning("Не удалось получить информацию о видео. Используется демонстрационная телеметрия.")
-        return generate_demo_telemetry()
+        logger.warning("Не удалось получить информацию о видео. Телеметрия отсутствует.")
+        return _empty_telemetry(source="unavailable")
 
     fps, duration = _get_video_info(probe_data)
 
     if duration <= 0:
-        logger.warning("Длительность видео не определена. Используется 60 секунд.")
-        duration = 60.0
+        logger.warning("Длительность видео не определена.")
 
     logger.info("Видео: FPS=%s, длительность=%.1fс", fps, duration)
 
-    # Пробуем извлечь поток данных
-    raw_data = _extract_data_stream(video_path, timeout=ffmpeg_timeout)
-    points = []
+    points = _try_extract_with_pyosmogps(
+        video_path,
+        duration=duration,
+        perf=perf,
+        extract_cfg=extract_cfg,
+    )
+
+    # Fallback: старый путь через ffmpeg-потоки/NMEA
+    raw_data = b""
+    if not points:
+        raw_data = _extract_data_stream(video_path, timeout=ffmpeg_timeout)
 
     if raw_data:
         points = _parse_nmea_from_bytes(raw_data)
@@ -212,10 +427,10 @@ def extract_telemetry(video_path: str, perf_config: dict = None) -> dict:
     if not points:
         points = _try_extract_mp4_metadata(video_path, probe_data, timeout=ffmpeg_timeout)
 
-    # Если всё равно пусто — используем демо
+    # Если всё равно пусто — возвращаем пустой результат без подмены
     if not points:
-        logger.warning("Телеметрия не найдена в видео. Используется демонстрационная телеметрия.")
-        return generate_demo_telemetry(duration, fps)
+        logger.warning("Телеметрия не найдена в видео.")
+        return _empty_telemetry(fps=fps, duration=duration, source="video")
 
     # Назначаем временные метки
     if len(points) > 1:

@@ -13,3 +13,4 @@ output/
 *.mp4
 *.json
 !config/default.json
+ffmpeg-master-latest-win64-gpl-shared

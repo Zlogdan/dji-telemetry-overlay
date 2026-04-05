@@ -24,6 +24,7 @@ PyQt5>=5.15.0
 Pillow>=9.0.0
 numpy>=1.21.0
 requests>=2.26.0
+pyosmogps
 ```
 
 ### Установка FFmpeg
@@ -64,15 +65,14 @@ python main.py
 
 1. **Выбор файлов** — укажите исходный видеофайл DJI и путь для сохранения оверлея
 2. **Извлечь телеметрию** — анализирует видео и извлекает GPS-данные
-3. **Демо-телеметрия** — генерирует тестовую телеметрию (круговой маршрут над Москвой)
-4. **Настройка модулей** — включите/отключите нужные элементы визуализации
-5. **Параметры** — настройте масштаб карты, максимальную скорость, размер кадра
-6. **Создать оверлей** — рендерит финальный видеофайл
+3. **Настройка модулей** — включите/отключите нужные элементы визуализации
+4. **Параметры** — настройте масштаб карты, максимальную скорость, размер кадра
+5. **Создать оверлей** — рендерит финальный видеофайл
 
 ### Программное использование
 
 ```python
-from core.extractor import extract_telemetry, generate_demo_telemetry
+from core.extractor import extract_telemetry
 from renderer.engine import RenderEngine
 from config.config_manager import ConfigManager
 
@@ -82,13 +82,40 @@ config = ConfigManager()
 # Извлекаем телеметрию из видео
 telemetry = extract_telemetry("path/to/DJI_video.MP4")
 
-# Или генерируем демо
-telemetry = generate_demo_telemetry(duration=60.0, fps=30.0)
-
 # Рендерим оверлей
 engine = RenderEngine(config.config)
 engine.render_to_video(telemetry, "overlay_output.mov")
 ```
+
+## Тестирование
+
+```bash
+# Установить pytest (если не установлен)
+python -m pip install pytest
+
+# Запустить тесты extractor
+python -m pytest tests/test_extractor.py
+```
+
+## Устранение проблем
+
+### Ошибка извлечения на Windows: UnicodeDecodeError / NoneType в json.loads
+
+Симптомы:
+- `UnicodeDecodeError: 'charmap' codec can't decode byte ...`
+- `the JSON object must be str, bytes or bytearray, not NoneType`
+
+Причина:
+- На Windows вывод `ffprobe` иногда декодируется системной кодировкой (`cp1252`), что может ломать чтение JSON.
+
+Что сделано в проекте:
+- В `core/extractor.py` разбор вывода `ffprobe` выполняется с `encoding="utf-8"` и `errors="replace"`.
+- Добавлена защита от пустого/`None` вывода перед `json.loads`.
+
+Если проблема сохраняется:
+1. Проверьте, что используется актуальная версия `core/extractor.py`.
+2. Убедитесь, что `ffprobe` доступен в PATH: `ffprobe -version`.
+3. Перезапустите приложение и повторите извлечение.
 
 ## Конфигурация
 
@@ -210,7 +237,12 @@ FFmpeg stdin          →  ProRes 4444 / VP9 с альфа-каналом
 ## Описание модулей
 
 ### `core/extractor.py`
-Извлекает телеметрию из видеофайлов DJI. Использует `ffprobe` для анализа потоков и `ffmpeg` для извлечения данных. Поддерживает NMEA-данные в потоке данных и метаданных MP4. При отсутствии реальной телеметрии генерирует демонстрационную.
+Извлекает телеметрию из видеофайлов DJI. По умолчанию сначала использует `pyosmogps extract` (GPX, как в рабочем batch-процессе), затем при необходимости переключается на fallback через `ffprobe` + `ffmpeg` + NMEA/MP4 metadata. Если телеметрия в файле не найдена, возвращает пустой результат без подстановки тестовых данных.
+
+Параметры `pyosmogps` настраиваются в `config/default.json`:
+- `extraction.pyosmogps_frequency` (по умолчанию `1`)
+- `extraction.pyosmogps_resampling_method` (по умолчанию `lpf`)
+- `extraction.pyosmogps_timezone_offset` (по умолчанию `3`)
 
 ### `core/parser.py`
 Разбирает NMEA-предложения (`GPRMC`, `GPGGA`, `GNRMC`, `GNGGA`). Конвертирует координаты из формата NMEA в десятичные градусы. Проверяет контрольные суммы.

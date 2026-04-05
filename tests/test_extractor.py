@@ -2,60 +2,8 @@
 """Тесты для модуля core/extractor.py."""
 
 import pytest
-from core.extractor import generate_demo_telemetry, _get_video_info
-
-
-class TestGenerateDemoTelemetry:
-    def test_returns_dict_with_required_keys(self):
-        result = generate_demo_telemetry()
-        assert "fps" in result
-        assert "duration" in result
-        assert "points" in result
-        assert "source" in result
-
-    def test_source_is_demo(self):
-        result = generate_demo_telemetry()
-        assert result["source"] == "demo"
-
-    def test_fps_preserved(self):
-        result = generate_demo_telemetry(duration=10.0, fps=25.0)
-        assert result["fps"] == 25.0
-
-    def test_duration_preserved(self):
-        result = generate_demo_telemetry(duration=30.0)
-        assert result["duration"] == 30.0
-
-    def test_points_count_matches_duration(self):
-        result = generate_demo_telemetry(duration=60.0)
-        # One point per second
-        assert len(result["points"]) == 60
-
-    def test_points_have_required_fields(self):
-        result = generate_demo_telemetry(duration=5.0)
-        for p in result["points"]:
-            assert "t" in p
-            assert "lat" in p
-            assert "lon" in p
-            assert "speed" in p
-            assert "alt" in p
-            assert "heading" in p
-
-    def test_speed_is_positive(self):
-        result = generate_demo_telemetry(duration=10.0)
-        for p in result["points"]:
-            assert p["speed"] >= 0.0
-
-    def test_heading_in_range(self):
-        result = generate_demo_telemetry(duration=10.0)
-        for p in result["points"]:
-            assert 0.0 <= p["heading"] < 360.0
-
-    def test_lat_lon_near_moscow(self):
-        result = generate_demo_telemetry(duration=10.0)
-        for p in result["points"]:
-            # Demo route is centered around Moscow
-            assert 55.0 < p["lat"] < 56.5
-            assert 36.5 < p["lon"] < 38.5
+from core.extractor import _get_video_info, _run_ffprobe, extract_telemetry
+from core.parser import TelemetryPoint
 
 
 class TestGetVideoInfo:
@@ -125,3 +73,96 @@ class TestGetVideoInfo:
         probe_data = {"format": {"duration": "not_a_number"}, "streams": []}
         fps, duration = _get_video_info(probe_data)
         assert duration == 0.0
+
+
+class TestRunFfprobe:
+    class _FakeCompletedProcess:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def test_returns_none_when_stdout_is_none(self, monkeypatch):
+        def fake_run(*args, **kwargs):
+            return self._FakeCompletedProcess(returncode=0, stdout=None, stderr="")
+
+        monkeypatch.setattr("core.extractor.subprocess.run", fake_run)
+
+        result = _run_ffprobe("dummy.mp4")
+        assert result is None
+
+    def test_returns_none_when_stdout_is_empty(self, monkeypatch):
+        def fake_run(*args, **kwargs):
+            return self._FakeCompletedProcess(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr("core.extractor.subprocess.run", fake_run)
+
+        result = _run_ffprobe("dummy.mp4")
+        assert result is None
+
+
+class TestExtractTelemetry:
+    def test_returns_empty_when_file_missing(self, monkeypatch):
+        monkeypatch.setattr("core.extractor.os.path.exists", lambda _p: False)
+
+        result = extract_telemetry("missing.mp4")
+
+        assert result["points"] == []
+        assert result["source"] == "missing"
+
+    def test_returns_empty_when_probe_unavailable(self, monkeypatch):
+        monkeypatch.setattr("core.extractor.os.path.exists", lambda _p: True)
+        monkeypatch.setattr("core.extractor._run_ffprobe", lambda *_a, **_k: None)
+
+        result = extract_telemetry("video.mp4")
+
+        assert result["points"] == []
+        assert result["source"] == "unavailable"
+
+    def test_prefers_pyosmogps_points(self, monkeypatch):
+        monkeypatch.setattr("core.extractor.os.path.exists", lambda _p: True)
+        monkeypatch.setattr(
+            "core.extractor._run_ffprobe",
+            lambda *_a, **_k: {
+                "format": {"duration": "2.0"},
+                "streams": [{"codec_type": "video", "r_frame_rate": "30/1"}],
+            },
+        )
+
+        pyosmo_points = [
+            TelemetryPoint(t=0.0, lat=55.0, lon=37.0, speed=10.0, alt=100.0, heading=90.0),
+            TelemetryPoint(t=1.0, lat=55.1, lon=37.1, speed=11.0, alt=101.0, heading=91.0),
+        ]
+
+        monkeypatch.setattr("core.extractor._try_extract_with_pyosmogps", lambda *_a, **_k: pyosmo_points)
+
+        # ffmpeg путь не должен быть вызван, если pyosmogps уже дал точки
+        def _fail_if_called(*_a, **_k):
+            raise AssertionError("ffmpeg fallback should not run when pyosmogps succeeds")
+
+        monkeypatch.setattr("core.extractor._extract_data_stream", _fail_if_called)
+
+        result = extract_telemetry("video.mp4")
+        assert result["source"] == "video"
+        assert len(result["points"]) == 2
+        assert result["points"][0]["lat"] == pytest.approx(55.0)
+
+    def test_fallbacks_to_ffmpeg_when_pyosmogps_empty(self, monkeypatch):
+        monkeypatch.setattr("core.extractor.os.path.exists", lambda _p: True)
+        monkeypatch.setattr(
+            "core.extractor._run_ffprobe",
+            lambda *_a, **_k: {
+                "format": {"duration": "1.0"},
+                "streams": [{"codec_type": "video", "r_frame_rate": "25/1"}],
+            },
+        )
+        monkeypatch.setattr("core.extractor._try_extract_with_pyosmogps", lambda *_a, **_k: [])
+        monkeypatch.setattr("core.extractor._extract_data_stream", lambda *_a, **_k: b"raw")
+
+        nmea_points = [TelemetryPoint(t=0.0, lat=50.0, lon=30.0)]
+        monkeypatch.setattr("core.extractor._parse_nmea_from_bytes", lambda *_a, **_k: nmea_points)
+
+        result = extract_telemetry("video.mp4")
+        assert result["source"] == "video"
+        assert len(result["points"]) == 1
+        assert result["points"][0]["lat"] == pytest.approx(50.0)

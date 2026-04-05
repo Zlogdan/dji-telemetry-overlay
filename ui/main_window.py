@@ -32,17 +32,22 @@ class TelemetryWorker(QObject):
     error = pyqtSignal(str)              # произошла ошибка
     progress = pyqtSignal(str)           # сообщение о прогрессе
 
-    def __init__(self, video_path: str, perf_config: dict = None):
+    def __init__(self, video_path: str, perf_config: dict = None, extract_config: dict = None):
         super().__init__()
         self.video_path = video_path
         self.perf_config = perf_config or {}
+        self.extract_config = extract_config or {}
 
     def run(self):
         """Выполняет извлечение телеметрии."""
         try:
             self.progress.emit("Анализ видеофайла...")
             from core.extractor import extract_telemetry
-            telemetry = extract_telemetry(self.video_path, perf_config=self.perf_config)
+            telemetry = extract_telemetry(
+                self.video_path,
+                perf_config=self.perf_config,
+                extract_config=self.extract_config,
+            )
             self.progress.emit(f"Извлечено точек: {len(telemetry.get('points', []))}")
             self.finished.emit(telemetry)
         except Exception as e:
@@ -207,16 +212,6 @@ class MainWindow(QMainWindow):
         )
         self.extract_btn.clicked.connect(self._extract_telemetry)
         layout.addWidget(self.extract_btn)
-
-        # Демо-телеметрия
-        demo_btn = QPushButton("Использовать демо-телеметрию")
-        demo_btn.setMinimumHeight(30)
-        demo_btn.setStyleSheet(
-            "QPushButton { background-color: #555; color: #ddd; border-radius: 4px; }"
-            "QPushButton:hover { background-color: #666; }"
-        )
-        demo_btn.clicked.connect(self._use_demo_telemetry)
-        layout.addWidget(demo_btn)
 
         # Кнопка создания оверлея
         self.render_btn = QPushButton("Создать оверлей")
@@ -409,8 +404,7 @@ class MainWindow(QMainWindow):
         self.telemetry_text.setFont(QFont("Monospace", 10))
         self.telemetry_text.setPlaceholderText(
             "Здесь будет отображаться извлечённая телеметрия в формате JSON...\n\n"
-            "Выберите видеофайл и нажмите «Извлечь телеметрию»,\n"
-            "или используйте «Демо-телеметрию» для тестирования."
+            "Выберите видеофайл и нажмите «Извлечь телеметрию»."
         )
         layout.addWidget(self.telemetry_text)
 
@@ -507,7 +501,8 @@ class MainWindow(QMainWindow):
         self._thread = QThread()
         self._worker = TelemetryWorker(
             video_path,
-            perf_config=self.config_manager.config.get("performance", {})
+            perf_config=self.config_manager.config.get("performance", {}),
+            extract_config=self.config_manager.config.get("extraction", {}),
         )
         self._worker.moveToThread(self._thread)
 
@@ -520,21 +515,10 @@ class MainWindow(QMainWindow):
 
         self._thread.start()
 
-    def _use_demo_telemetry(self):
-        """Генерирует демонстрационную телеметрию."""
-        self.status_label.setText("Генерация демо-телеметрии...")
-        try:
-            from core.extractor import generate_demo_telemetry
-            telemetry = generate_demo_telemetry(duration=60.0, fps=30.0)
-            self._on_telemetry_extracted(telemetry)
-        except Exception as e:
-            self._on_extraction_error(f"Ошибка генерации демо: {str(e)}")
-
     def _on_telemetry_extracted(self, telemetry: dict):
         """Обрабатывает успешно извлечённую телеметрию."""
         self.telemetry_data = telemetry
         self.extract_btn.setEnabled(True)
-        self.render_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
 
         pts = telemetry.get("points", [])
@@ -560,8 +544,14 @@ class MainWindow(QMainWindow):
             json.dumps(preview_data, ensure_ascii=False, indent=2)
         )
 
-        self.status_label.setText(f"Телеметрия готова: {len(pts)} точек")
-        self.statusBar().showMessage(f"Телеметрия извлечена: {len(pts)} точек")
+        if pts:
+            self.render_btn.setEnabled(True)
+            self.status_label.setText(f"Телеметрия готова: {len(pts)} точек")
+            self.statusBar().showMessage(f"Телеметрия извлечена: {len(pts)} точек")
+        else:
+            self.render_btn.setEnabled(False)
+            self.status_label.setText("Телеметрия не найдена в файле")
+            self.statusBar().showMessage("Телеметрия не найдена")
 
     def _on_extraction_error(self, error_msg: str):
         """Обрабатывает ошибку извлечения."""

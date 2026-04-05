@@ -120,6 +120,11 @@ class RenderEngine:
         output_path = str(output_path)
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
+        perf_cfg = self.config.get("performance", {})
+        prores_qscale = max(1, min(31, int(perf_cfg.get("prores_qscale", 11))))
+        vp9_crf = max(0, min(63, int(perf_cfg.get("vp9_crf", 34))))
+        vp9_cpu_used = max(0, min(8, int(perf_cfg.get("vp9_cpu_used", 2))))
+
         # Определяем формат кодека по расширению
         ext = Path(output_path).suffix.lower()
         if ext == ".mov":
@@ -132,6 +137,7 @@ class RenderEngine:
                 "-i", "pipe:0",
                 "-vcodec", "prores_ks",
                 "-profile:v", "4444",
+                "-qscale:v", str(prores_qscale),
                 "-pix_fmt", "yuva444p10le",
                 output_path
             ]
@@ -146,7 +152,12 @@ class RenderEngine:
                 "-vcodec", "libvpx-vp9",
                 "-pix_fmt", "yuva420p",
                 "-b:v", "0",
-                "-crf", "30",
+                "-crf", str(vp9_crf),
+                "-deadline", "good",
+                "-cpu-used", str(vp9_cpu_used),
+                "-row-mt", "1",
+                "-tile-columns", "2",
+                "-auto-alt-ref", "0",
                 output_path
             ]
 

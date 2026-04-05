@@ -36,6 +36,16 @@ class ConfigManager:
         return {
             "width": 1920,
             "height": 1080,
+            "performance": {
+                "ffprobe_timeout": 30,
+                "ffmpeg_timeout": 60,
+                "png_compress_level": 1,
+            },
+            "extraction": {
+                "pyosmogps_frequency": 1,
+                "pyosmogps_resampling_method": "lpf",
+                "pyosmogps_timezone_offset": 3,
+            },
             "modules": []
         }
 
