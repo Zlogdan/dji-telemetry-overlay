@@ -18,7 +18,7 @@ from PyQt5.QtCore import Qt, QThread
 from config.config_manager import ConfigManager
 from ui import main_window_builders as builders
 from ui.preview_window import PreviewWindow
-from ui.workers import TelemetryWorker, RenderWorker
+from ui.workers import TelemetryWorker, RenderWorker, BatchWorker
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,8 @@ class MainWindow(QMainWindow):
         self.telemetry_data = None
         self._thread = None
         self._worker = None
+        self._batch_thread = None
+        self._batch_worker = None
 
         self.setWindowTitle("DJI Telemetry Overlay")
         self.setMinimumSize(1000, 700)
@@ -606,6 +608,12 @@ class MainWindow(QMainWindow):
         """Обработчик смены вкладки — обновляет превью при открытии Расположение."""
         if index == 2:  # Вкладка "Расположение"
             self._refresh_layout_preview()
+        elif index == 3:  # Вкладка "Пакетная обработка"
+            # Синхронизируем расширение выходных файлов с текущим форматом
+            mode = self.export_mode_combo.currentData() if hasattr(self, "export_mode_combo") else "video"
+            ext = self.output_format_combo.currentData() if hasattr(self, "output_format_combo") else "mov"
+            if hasattr(self, "batch_queue_widget"):
+                self.batch_queue_widget.set_output_ext(ext, mode)
 
     def _refresh_layout_preview(self):
         """Обновляет превью первого кадра на вкладке расположения."""
@@ -679,6 +687,113 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(f"Конфигурация сохранена: {path}")
             except Exception as e:
                 QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить конфиг:\n{e}")
+
+    def _build_batch_tab(self) -> QWidget:
+        """Вкладка «Пакетная обработка»."""
+        return builders.build_batch_tab(self)
+
+    # ── Пакетная обработка ───────────────────────────────────────────────────
+
+    def _batch_run(self):
+        """Запускает последовательную обработку всех файлов из очереди."""
+        queue = self.batch_queue_widget.get_queue()
+        if not queue:
+            QMessageBox.warning(self, "Очередь пуста",
+                                "Добавьте видеофайлы в список перед запуском.")
+            return
+
+        jobs = [{"video_path": item.video_path, "output_path": item.output_path}
+                for item in queue]
+
+        self.batch_run_btn.setEnabled(False)
+        self.batch_stop_btn.setEnabled(True)
+        self.batch_queue_widget.set_buttons_enabled(False)
+        self.batch_progress_bar.setVisible(True)
+        self.batch_progress_bar.setRange(0, 100)
+        self.batch_progress_bar.setValue(0)
+        total = len(jobs)
+        self.batch_status_label.setText(f"Обработка файлов: 0 из {total}…")
+
+        config = self.config_manager.config.copy()
+
+        self._batch_thread = QThread()
+        self._batch_worker = BatchWorker(jobs, config)
+        self._batch_worker.moveToThread(self._batch_thread)
+
+        self._batch_thread.started.connect(self._batch_worker.run)
+        self._batch_worker.file_started.connect(self._on_batch_file_started)
+        self._batch_worker.file_progress.connect(self._on_batch_file_progress)
+        self._batch_worker.file_finished.connect(self._on_batch_file_finished)
+        self._batch_worker.file_error.connect(self._on_batch_file_error)
+        self._batch_worker.all_finished.connect(self._on_batch_all_finished)
+        self._batch_worker.all_finished.connect(self._batch_thread.quit)
+
+        self._batch_thread.start()
+
+    def _batch_stop(self):
+        """Запрашивает досрочное прерывание пакетной обработки."""
+        if self._batch_worker is not None:
+            self._batch_worker.stop()
+        self.batch_stop_btn.setEnabled(False)
+        self.batch_status_label.setText("Ожидание завершения текущего файла…")
+
+    def _on_batch_file_started(self, index: int, video_path: str):
+        from pathlib import Path as _Path
+        fname = _Path(video_path).name
+        queue = self.batch_queue_widget.get_queue()
+        total = len(queue)
+        self.batch_status_label.setText(
+            f"Файл {index + 1} из {total}: {fname}"
+        )
+        self.batch_queue_widget.update_item_status(index, "extracting", progress=0)
+        self.batch_progress_bar.setValue(0)
+
+    def _on_batch_file_progress(self, index: int, stage: str,
+                                current: int, total: int):
+        from ui.file_queue_widget import STATUS_EXTRACTING, STATUS_RENDERING
+        if stage == "extracting":
+            status = STATUS_EXTRACTING
+            pct = 0
+            stage_label = ""
+        else:  # rendering
+            status = STATUS_RENDERING
+            pct = int(100 * current / total) if total > 0 else 0
+            stage_label = f"кадр {current}/{total}"
+
+        self.batch_queue_widget.update_item_status(
+            index, status, progress=pct, stage_label=stage_label
+        )
+        self.batch_progress_bar.setValue(pct)
+
+    def _on_batch_file_finished(self, index: int, output_path: str):
+        from ui.file_queue_widget import STATUS_DONE
+        queue = self.batch_queue_widget.get_queue()
+        total = len(queue)
+        self.batch_queue_widget.update_item_status(index, STATUS_DONE, progress=100)
+        self.batch_status_label.setText(
+            f"Завершено {index + 1} из {total}: {output_path}"
+        )
+
+    def _on_batch_file_error(self, index: int, error_msg: str):
+        from ui.file_queue_widget import STATUS_ERROR
+        self.batch_queue_widget.update_item_status(
+            index, STATUS_ERROR, error=error_msg
+        )
+        self.statusBar().showMessage(f"Ошибка файла #{index + 1}: {error_msg}")
+
+    def _on_batch_all_finished(self, success_count: int, error_count: int):
+        self.batch_run_btn.setEnabled(True)
+        self.batch_stop_btn.setEnabled(False)
+        self.batch_queue_widget.set_buttons_enabled(True)
+        self.batch_progress_bar.setVisible(False)
+
+        total = success_count + error_count
+        msg = f"Обработка завершена: {success_count} из {total} файлов."
+        if error_count:
+            msg += f"\nОшибок: {error_count}."
+        self.batch_status_label.setText(msg)
+        self.statusBar().showMessage(msg)
+        QMessageBox.information(self, "Пакетная обработка завершена", msg)
 
     def _show_about(self):
         """Показывает окно «О программе»."""

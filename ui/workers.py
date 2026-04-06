@@ -68,3 +68,94 @@ class RenderWorker(QObject):
             self.finished.emit(self.output_path)
         except Exception as e:
             self.error.emit(f"Ошибка рендеринга: {str(e)}")
+
+
+class BatchWorker(QObject):
+    """Рабочий поток для последовательной пакетной обработки нескольких файлов."""
+
+    # Сигналы
+    file_started = pyqtSignal(int, str)          # index, video_path
+    file_progress = pyqtSignal(int, str, int, int)  # index, stage, current, total
+    file_finished = pyqtSignal(int, str)         # index, output_path
+    file_error = pyqtSignal(int, str)            # index, error_message
+    all_finished = pyqtSignal(int, int)          # success_count, error_count
+
+    def __init__(self, queue: list, config: dict):
+        """
+        Parameters
+        ----------
+        queue:
+            Список словарей с ключами ``video_path``, ``output_path``.
+        config:
+            Конфигурация приложения (используется для рендеринга).
+        """
+        super().__init__()
+        self._queue = queue
+        self._config = config
+        self._stop = False
+
+    def stop(self):
+        """Запрашивает досрочное прерывание обработки после текущего файла."""
+        self._stop = True
+
+    def run(self):
+        """Последовательно обрабатывает все файлы из очереди."""
+        success_count = 0
+        error_count = 0
+
+        for index, job in enumerate(self._queue):
+            if self._stop:
+                break
+
+            video_path = job["video_path"]
+            output_path = job["output_path"]
+
+            self.file_started.emit(index, video_path)
+
+            # ── 1. Извлечение телеметрии ──────────────────────────────────
+            try:
+                self.file_progress.emit(index, "extracting", 0, 0)
+                from core.extractor import extract_telemetry
+                telemetry = extract_telemetry(
+                    video_path,
+                    perf_config=self._config.get("performance", {}),
+                    extract_config=self._config.get("extraction", {}),
+                )
+            except Exception as exc:
+                self.file_error.emit(index, f"Ошибка извлечения: {exc}")
+                error_count += 1
+                continue
+
+            if self._stop:
+                break
+
+            # ── 2. Рендеринг оверлея ──────────────────────────────────────
+            try:
+                from renderer.engine import RenderEngine
+                engine = RenderEngine(self._config)
+                mode = str(self._config.get("export", {}).get("mode", "video"))
+
+                def _progress(current: int, total: int, _idx=index):
+                    self.file_progress.emit(_idx, "rendering", current, total)
+
+                if mode == "png_sequence":
+                    engine.render_to_png_sequence(
+                        telemetry,
+                        output_path,
+                        progress_callback=_progress,
+                    )
+                else:
+                    engine.render_to_video(
+                        telemetry,
+                        output_path,
+                        progress_callback=_progress,
+                    )
+            except Exception as exc:
+                self.file_error.emit(index, f"Ошибка рендеринга: {exc}")
+                error_count += 1
+                continue
+
+            self.file_finished.emit(index, output_path)
+            success_count += 1
+
+        self.all_finished.emit(success_count, error_count)

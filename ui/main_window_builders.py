@@ -37,6 +37,7 @@ def setup_ui(window):
     window.tabs.addTab(build_main_tab(window), "Основное")
     window.tabs.addTab(build_settings_tab(window), "Настройки")
     window.tabs.addTab(build_layout_tab(window), "Расположение")
+    window.tabs.addTab(build_batch_tab(window), "Пакетная обработка")
 
 
 def build_main_tab(window) -> QWidget:
@@ -528,3 +529,68 @@ def build_preview_group(window) -> QGroupBox:
     layout.addWidget(window.telemetry_text)
 
     return group
+
+
+def build_batch_tab(window) -> QWidget:
+    """Вкладка «Пакетная обработка»: очередь файлов + запуск одной кнопкой."""
+    from ui.file_queue_widget import FileQueueWidget
+
+    widget = QWidget()
+    main_layout = QVBoxLayout(widget)
+    main_layout.setSpacing(10)
+    main_layout.setContentsMargins(12, 12, 12, 12)
+
+    # ── Заголовок-подсказка ──────────────────────────────────────────────────
+    hint = QLabel(
+        "Добавьте несколько видеофайлов DJI и нажмите «Запустить обработку».\n"
+        "Для добавления файлов можно также перетащить их мышью в список ниже."
+    )
+    hint.setStyleSheet("color: #aaa; font-size: 11px;")
+    hint.setWordWrap(True)
+    main_layout.addWidget(hint)
+
+    # ── Виджет очереди ───────────────────────────────────────────────────────
+    window.batch_queue_widget = FileQueueWidget()
+    main_layout.addWidget(window.batch_queue_widget, 1)
+
+    # ── Прогресс текущего файла ──────────────────────────────────────────────
+    window.batch_progress_bar = QProgressBar()
+    window.batch_progress_bar.setVisible(False)
+    window.batch_progress_bar.setTextVisible(True)
+    main_layout.addWidget(window.batch_progress_bar)
+
+    window.batch_status_label = QLabel("")
+    window.batch_status_label.setStyleSheet("color: #aaa; font-size: 11px;")
+    window.batch_status_label.setWordWrap(True)
+    main_layout.addWidget(window.batch_status_label)
+
+    # ── Кнопки управления ────────────────────────────────────────────────────
+    btn_row = QWidget()
+    btn_layout = QHBoxLayout(btn_row)
+    btn_layout.setContentsMargins(0, 0, 0, 0)
+    btn_layout.setSpacing(8)
+
+    window.batch_run_btn = QPushButton("▶  Запустить обработку")
+    window.batch_run_btn.setMinimumHeight(42)
+    window.batch_run_btn.setStyleSheet(
+        "QPushButton { background-color: #1a5a8a; color: white; font-weight: bold; border-radius: 4px; }"
+        "QPushButton:hover { background-color: #2070aa; }"
+        "QPushButton:disabled { background-color: #555; color: #888; }"
+    )
+    window.batch_run_btn.clicked.connect(window._batch_run)
+
+    window.batch_stop_btn = QPushButton("■  Остановить")
+    window.batch_stop_btn.setMinimumHeight(42)
+    window.batch_stop_btn.setEnabled(False)
+    window.batch_stop_btn.setStyleSheet(
+        "QPushButton { background-color: #7a2d2d; color: white; font-weight: bold; border-radius: 4px; }"
+        "QPushButton:hover { background-color: #a03030; }"
+        "QPushButton:disabled { background-color: #555; color: #888; }"
+    )
+    window.batch_stop_btn.clicked.connect(window._batch_stop)
+
+    btn_layout.addWidget(window.batch_run_btn, 1)
+    btn_layout.addWidget(window.batch_stop_btn)
+    main_layout.addWidget(btn_row)
+
+    return widget
