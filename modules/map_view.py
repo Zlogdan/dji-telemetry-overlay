@@ -7,6 +7,7 @@ import math
 import logging
 import os
 import hashlib
+import threading
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -36,6 +37,9 @@ TILE_HEADERS = {
 
 # Максимальное количество тайлов в памяти
 MAX_TILE_CACHE_SIZE = 256
+
+# Максимальное количество тайловых мозаик в памяти
+MAX_MOSAIC_CACHE_SIZE = 4
 
 # Провайдеры карт: шаблоны URL тайлов (параметры {z}, {x}, {y})
 MAP_PROVIDERS = {
@@ -161,41 +165,41 @@ class MapModule(OverlayModule):
         self.zoom = config.get("zoom", 14)
         self.map_provider = config.get("map_provider", "osm")
         self._tile_cache = {}  # кеш загруженных тайлов в памяти
+        self._tile_lock = threading.Lock()  # блокировка для потокобезопасного доступа
+        self._mosaic_cache = {}  # кеш собранных тайловых мозаик
+        self._mosaic_lock = threading.Lock()  # блокировка мозаик
 
     def _is_yandex_provider(self) -> bool:
         return self.map_provider in ("yandex_map", "yandex_sat")
 
     def _get_tile(self, zoom: int, x: int, y: int) -> Optional[Image.Image]:
-        """Получает тайл из памяти или скачивает."""
+        """Получает тайл из памяти или скачивает (потокобезопасно)."""
         key = (self.map_provider, zoom, x, y)
-        if key not in self._tile_cache:
-            # Ограничиваем размер кеша: удаляем первый элемент при переполнении
-            if len(self._tile_cache) >= MAX_TILE_CACHE_SIZE:
-                self._tile_cache.pop(next(iter(self._tile_cache)))
-            self._tile_cache[key] = _download_tile(self.map_provider, zoom, x, y)
-        return self._tile_cache[key]
+        with self._tile_lock:
+            if key in self._tile_cache:
+                return self._tile_cache[key]
+        # Скачиваем за пределами блокировки, чтобы не блокировать другие потоки
+        tile = _download_tile(self.map_provider, zoom, x, y)
+        with self._tile_lock:
+            if key not in self._tile_cache:
+                if len(self._tile_cache) >= MAX_TILE_CACHE_SIZE:
+                    self._tile_cache.pop(next(iter(self._tile_cache)))
+                self._tile_cache[key] = tile
+        return tile
 
-    def _build_map_image(self, center_lat: float, center_lon: float) -> Tuple[Image.Image, float, float]:
+    def _build_tile_mosaic(self, cx_tile: int, cy_tile: int) -> Tuple[Image.Image, int, int]:
         """
-        Собирает изображение карты из тайлов.
+        Собирает мозаику из тайлов вокруг заданного центрального тайла.
 
         Возвращает:
-            (изображение карты, pixel_x центра, pixel_y центра)
+            (изображение мозаики, tile_x_start, tile_y_start)
         """
         zoom = self.zoom
         tile_size = 256
-        is_yandex = self._is_yandex_provider()
-        # Центральный тайл
-        if is_yandex:
-            cx_tile, cy_tile = lat_lon_to_tile_yandex(center_lat, center_lon, zoom)
-        else:
-            cx_tile, cy_tile = lat_lon_to_tile(center_lat, center_lon, zoom)
 
-        # Сколько тайлов нужно в каждую сторону
         tiles_x = math.ceil(self.width / tile_size) + 2
         tiles_y = math.ceil(self.height / tile_size) + 2
 
-        # Диапазон тайлов
         x_start = cx_tile - tiles_x // 2
         y_start = cy_tile - tiles_y // 2
         x_end = x_start + tiles_x
@@ -206,25 +210,60 @@ class MapModule(OverlayModule):
 
         map_img = Image.new("RGBA", (map_width, map_height), (40, 44, 52, 255))
 
-        # Наклеиваем тайлы
         for tx in range(x_start, x_end):
             for ty in range(y_start, y_end):
                 tile = self._get_tile(zoom, tx, ty)
                 if tile:
                     px = (tx - x_start) * tile_size
                     py = (ty - y_start) * tile_size
-                    # Затемняем тайл для лучшего контраста
                     darkened = Image.new("RGBA", tile.size, (0, 0, 0, 80))
                     tile_copy = tile.copy()
                     tile_copy.paste(darkened, mask=darkened)
                     map_img.paste(tile_copy, (px, py))
+
+        return map_img, x_start, y_start
+
+    def _get_tile_mosaic(self, cx_tile: int, cy_tile: int) -> Tuple[Image.Image, int, int]:
+        """Возвращает тайловую мозаику из кэша или строит её (потокобезопасно)."""
+        cache_key = (self.map_provider, self.zoom, cx_tile, cy_tile)
+        with self._mosaic_lock:
+            if cache_key in self._mosaic_cache:
+                return self._mosaic_cache[cache_key]
+        # Строим мозаику за пределами блокировки
+        mosaic = self._build_tile_mosaic(cx_tile, cy_tile)
+        with self._mosaic_lock:
+            if cache_key not in self._mosaic_cache:
+                if len(self._mosaic_cache) >= MAX_MOSAIC_CACHE_SIZE:
+                    self._mosaic_cache.pop(next(iter(self._mosaic_cache)))
+                self._mosaic_cache[cache_key] = mosaic
+        return mosaic
+
+    def _build_map_image(self, center_lat: float, center_lon: float) -> Tuple[Image.Image, float, float]:
+        """
+        Собирает изображение карты из тайлов (использует кэш мозаики).
+
+        Возвращает:
+            (изображение карты, pixel_x центра, pixel_y центра)
+        """
+        zoom = self.zoom
+        tile_size = 256
+        is_yandex = self._is_yandex_provider()
+
+        # Центральный тайл
+        if is_yandex:
+            cx_tile, cy_tile = lat_lon_to_tile_yandex(center_lat, center_lon, zoom)
+        else:
+            cx_tile, cy_tile = lat_lon_to_tile(center_lat, center_lon, zoom)
+
+        # Получаем мозаику из кэша
+        map_img, x_start, y_start = self._get_tile_mosaic(cx_tile, cy_tile)
 
         # Пиксельные координаты центра
         if is_yandex:
             center_px, center_py = lat_lon_to_pixel_yandex(center_lat, center_lon, zoom, tile_size)
         else:
             center_px, center_py = lat_lon_to_pixel(center_lat, center_lon, zoom, tile_size)
-        
+
         origin_px = x_start * tile_size
         origin_py = y_start * tile_size
 
